@@ -286,6 +286,8 @@ func runMain() int {
 		if err := processEventsDir(args, dEnv); err != nil {
 			// log.Print(err)
 		}
+
+		_ = dEnv.DoltDB.Close()
 	}()
 
 	if dEnv.CfgLoadErr != nil {

@@ -171,7 +171,7 @@ func (b BoltDBChunkStore) Rebase(ctx context.Context) error {
 // Root returns the root of the database as of the time the chunks.ChunkStore
 // was opened or the most recent call to Rebase.
 func (b BoltDBChunkStore) Root(ctx context.Context) (root hash.Hash, err error) {
-	err = b.DB.View(func(tx *bolt.Tx) error {
+	err = b.DB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(csBucket)
 		root = hash.New(b.Get(rootKey))
 		return nil
