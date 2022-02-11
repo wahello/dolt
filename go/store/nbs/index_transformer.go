@@ -24,7 +24,21 @@ var (
 	ErrNotEnoughBytes = errors.New("reader did not return enough bytes")
 )
 
-func NewIndexTransformer(src io.Reader, chunkCount int) io.Reader {
+// NewIndexFileTransformer returns a reader that converts a table index file that includes the footer
+func NewIndexFileTransformer(src io.Reader, chunkCount uint32) io.Reader {
+	indexSize := int64(indexSize(chunkCount))
+	indexReader := io.LimitReader(src, indexSize)
+	footerReader := io.LimitReader(src, footerSize)
+
+	reader := io.MultiReader(
+		NewIndexTransformer(indexReader, chunkCount),
+		footerReader,
+	)
+
+	return reader
+}
+
+func NewIndexTransformer(src io.Reader, chunkCount uint32) io.Reader {
 	tuplesSize := chunkCount * prefixTupleSize
 	lengthsSize := chunkCount * lengthSize
 	suffixesSize := chunkCount * addrSuffixSize

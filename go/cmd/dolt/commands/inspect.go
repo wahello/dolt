@@ -156,7 +156,7 @@ func (s *chunkIndexSummary) format() string {
 }
 
 func (s *chunkIndexSummary) addPrefix(i int, prefix uint64) {
-	g := nbs.GuessPrefixOrdinal(prefix, s.count)
+	g := nbs.GuessPrefixIdx(prefix, s.count)
 	guessErr := math.Abs(float64(i - g))
 
 	//s.errs = append(s.errs, guessErr)

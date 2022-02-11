@@ -533,7 +533,7 @@ func TestGuessPrefixOrdinal(t *testing.T) {
 	}
 
 	for i, pre := range prefixes {
-		guess := GuessPrefixOrdinal(pre, 256)
+		guess := GuessPrefixIdx(pre, 256)
 		assert.Equal(t, i, guess)
 	}
 }

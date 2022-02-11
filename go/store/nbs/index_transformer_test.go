@@ -180,7 +180,7 @@ func TestIndexTransformer(t *testing.T) {
 
 	t.Run("only converts lengths into offsets", func(t *testing.T) {
 		inReader := bytes.NewBuffer(inBytes)
-		outReader := NewIndexTransformer(inReader, chunkCount)
+		outReader := NewIndexTransformer(inReader, uint32(chunkCount))
 
 		err := testReader(outReader, outBytes)
 		require.NoError(t, err)

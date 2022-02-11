@@ -17,6 +17,7 @@ package nbs
 import (
 	"io"
 	"math"
+	"sync"
 
 	"github.com/dolthub/dolt/go/libraries/utils/iohelp"
 
@@ -83,7 +84,7 @@ func GetTableIndexPrefixes(rd io.ReadSeeker) (prefixes []uint64, err error) {
 	return idx.prefixes, nil
 }
 
-func GuessPrefixOrdinal(prefix uint64, n uint32) int {
+func GuessPrefixIdx(prefix uint64, n uint32) int {
 	hi := prefix >> 32
 	return int((hi * uint64(n)) / uint64(math.MaxUint32))
 }
@@ -96,4 +97,31 @@ func readNFrom(rd io.ReadSeeker, offset uint64, length uint32) ([]byte, error) {
 	}
 
 	return iohelp.ReadNBytes(rd, int(length))
+}
+
+// OffsetWriter implements io.Writer and writes at the specified position using io.WriterAt
+type OffsetWriter struct {
+	w   io.WriterAt
+	pos int64
+}
+
+func (w *OffsetWriter) Write(p []byte) (n int, err error) {
+	n, err = w.w.WriteAt(p, w.pos)
+	w.pos += int64(n)
+	if err != nil {
+		return n, err
+	}
+	return n, err
+}
+
+// ConcurrentWriterAt wraps an io.WriterAt but serializes all writes.
+type ConcurrentWriterAt struct {
+	w io.WriterAt
+	m sync.Mutex
+}
+
+func (w *ConcurrentWriterAt) WriteAt(p []byte, off int64) (n int, err error) {
+	w.m.Lock()
+	defer w.m.Unlock()
+	return w.WriteAt(p, off)
 }

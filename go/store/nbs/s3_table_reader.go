@@ -87,8 +87,18 @@ func (s3or *s3ObjectReader) ReadAt(ctx context.Context, name addr, p []byte, off
 		stats.S3ReadLatency.SampleTimeSince(t1)
 	}()
 
-	n, _, err = s3or.readRange(ctx, name, p, s3RangeHeader(off, int64(len(p))))
-	return
+	rangeReader, _, err := s3or.rangeReader(ctx, name, len(p), s3RangeHeader(off, int64(len(p))))
+	if err != nil {
+		return 0, err
+	}
+	defer rangeReader.Close()
+
+	n, err = io.ReadFull(rangeReader, p)
+	if err != nil {
+		return n, err
+	}
+
+	return n, nil
 }
 
 func s3RangeHeader(off, length int64) string {
@@ -99,36 +109,58 @@ func s3RangeHeader(off, length int64) string {
 const maxS3ReadFromEndReqSize = 256 * 1024 * 1024       // 256MB
 const preferredS3ReadFromEndReqSize = 128 * 1024 * 1024 // 128MB
 
-func (s3or *s3ObjectReader) ReadFromEnd(ctx context.Context, name addr, p []byte, stats *Stats) (n int, sz uint64, err error) {
+// ReadFromEndToWriter reads length bytes from the end of a specified s3 object. It writes those bytes to the given writer
+// which must be safe to use concurrently.
+func (s3or *s3ObjectReader) ReadFromEndToWriter(ctx context.Context, name addr, writer io.WriterAt, stats *Stats, length int) (n int, sz uint64, err error) {
 	defer func(t1 time.Time) {
-		stats.S3BytesPerRead.Sample(uint64(len(p)))
+		stats.S3BytesPerRead.Sample(uint64(length))
 		stats.S3ReadLatency.SampleTimeSince(t1)
 	}(time.Now())
 	totalN := uint64(0)
-	if len(p) > maxS3ReadFromEndReqSize {
+	if length > maxS3ReadFromEndReqSize {
 		// If we're bigger than 256MB, parallelize the read...
 		// Read the footer first and capture the size of the entire table file.
-		n, sz, err := s3or.readRange(ctx, name, p[len(p)-footerSize:], fmt.Sprintf("%s=-%d", s3RangePrefix, footerSize))
-		if err != nil {
-			return n, sz, err
-		}
+		n, sz, err = func() (int, uint64, error) {
+			footerReader, sz, err := s3or.rangeReader(ctx, name, footerSize, fmt.Sprintf("%s=-%d", s3RangePrefix, footerSize))
+			if err != nil {
+				return 0, sz, err
+			}
+			defer footerReader.Close()
+
+			w := &OffsetWriter{w: writer, pos: int64(length - footerSize)}
+
+			written, err := io.Copy(w, footerReader)
+			if err != nil {
+				return int(written), sz, err
+			}
+
+			return int(written), sz, nil
+		}()
 		totalN += uint64(n)
+
 		eg, egctx := errgroup.WithContext(ctx)
 		start := 0
-		for start < len(p)-footerSize {
+		for start < length-footerSize {
 			// Make parallel read requests of up to 128MB.
 			end := start + preferredS3ReadFromEndReqSize
-			if end > len(p)-footerSize {
-				end = len(p) - footerSize
+			if end > length-footerSize {
+				end = length - footerSize
 			}
-			bs := p[start:end]
-			rangeStart := sz - uint64(len(p)) + uint64(start)
-			rangeEnd := sz - uint64(len(p)) + uint64(end) - 1
+			rangeStart := sz - uint64(length) + uint64(start)
+			rangeEnd := sz - uint64(length) + uint64(end) - 1
 			eg.Go(func() error {
-				n, _, err := s3or.readRange(egctx, name, bs, fmt.Sprintf("%s=%d-%d", s3RangePrefix, rangeStart, rangeEnd))
+				rangeReader, _, err := s3or.rangeReader(egctx, name, preferredS3ReadFromEndReqSize, fmt.Sprintf("%s=%d-%d", s3RangePrefix, rangeStart, rangeEnd))
 				if err != nil {
 					return err
 				}
+				defer rangeReader.Close()
+
+				w := &OffsetWriter{w: writer, pos: int64(start)}
+				n, err := io.Copy(w, rangeReader)
+				if err != nil {
+					return err
+				}
+
 				atomic.AddUint64(&totalN, uint64(n))
 				return nil
 			})
@@ -140,11 +172,35 @@ func (s3or *s3ObjectReader) ReadFromEnd(ctx context.Context, name addr, p []byte
 		}
 		return int(totalN), sz, nil
 	}
-	return s3or.readRange(ctx, name, p, fmt.Sprintf("%s=-%d", s3RangePrefix, len(p)))
+
+	rangeReader, sz, err := s3or.rangeReader(ctx, name, length, fmt.Sprintf("%s=-%d", s3RangePrefix, length))
+	if err != nil {
+		return 0, sz, err
+	}
+	defer rangeReader.Close()
+
+	w := &OffsetWriter{w: writer, pos: 0}
+	written, err := io.Copy(w, rangeReader)
+	if err != nil {
+		return int(written), sz, err
+	}
+
+	return int(written), sz, nil
 }
 
-func (s3or *s3ObjectReader) readRange(ctx context.Context, name addr, p []byte, rangeHeader string) (n int, sz uint64, err error) {
-	read := func() (int, uint64, error) {
+func (s3or *s3ObjectReader) ReadFromEnd(ctx context.Context, name addr, p []byte, stats *Stats) (n int, sz uint64, err error) {
+	writer := aws.NewWriteAtBuffer(p)
+	return s3or.ReadFromEndToWriter(ctx, name, writer, stats, len(p))
+}
+
+func (s3or *s3ObjectReader) ReadFromEndToFile(ctx context.Context, name addr, length int, file *os.File, stats *Stats) (n int, sz uint64, err error) {
+	writer := &ConcurrentWriterAt{w: file}
+	return s3or.ReadFromEndToWriter(ctx, name, writer, stats, length)
+}
+
+// Creates a reader that reads a specific range of an s3 object. Length of data in reader is guaranteed to be `length`.
+func (s3or *s3ObjectReader) rangeReader(ctx context.Context, name addr, length int, rangeHeader string) (reader io.ReadCloser, sz uint64, err error) {
+	read := func() (io.ReadCloser, uint64, error) {
 		if s3or.readRl != nil {
 			s3or.readRl <- struct{}{}
 			defer func() {
@@ -160,12 +216,11 @@ func (s3or *s3ObjectReader) readRange(ctx context.Context, name addr, p []byte, 
 
 		result, err := s3or.s3.GetObjectWithContext(ctx, input)
 		if err != nil {
-			return 0, 0, err
+			return nil, 0, err
 		}
-		defer result.Body.Close()
 
-		if *result.ContentLength != int64(len(p)) {
-			return 0, 0, fmt.Errorf("failed to read entire range, key: %v, len(p): %d, rangeHeader: %s, ContentLength: %d", s3or.key(name.String()), len(p), rangeHeader, *result.ContentLength)
+		if *result.ContentLength != int64(length) {
+			return nil, 0, fmt.Errorf("failed to read entire range, key: %v, length: %d, rangeHeader: %s, ContentLength: %d", s3or.key(name.String()), length, rangeHeader, *result.ContentLength)
 		}
 
 		sz := uint64(0)
@@ -174,16 +229,15 @@ func (s3or *s3ObjectReader) readRange(ctx context.Context, name addr, p []byte, 
 			if i != -1 {
 				sz, err = strconv.ParseUint((*result.ContentRange)[i+1:], 10, 64)
 				if err != nil {
-					return 0, 0, err
+					return nil, 0, err
 				}
 			}
 		}
 
-		n, err = io.ReadFull(result.Body, p)
-		return n, sz, err
+		return result.Body, sz, err
 	}
 
-	n, sz, err = read()
+	reader, sz, err = read()
 	// We hit the point of diminishing returns investigating #3255, so add retries. In conversations with AWS people, it's not surprising to get transient failures when talking to S3, though SDKs are intended to have their own retrying. The issue may be that, in Go, making the S3 request and reading the data are separate operations, and the SDK kind of can't do its own retrying to handle failures in the latter.
 	if isConnReset(err) {
 		// We are backing off here because its possible and likely that the rate of requests to S3 is the underlying issue.
@@ -193,13 +247,13 @@ func (s3or *s3ObjectReader) readRange(ctx context.Context, name addr, p []byte, 
 			Factor: 2,
 			Jitter: true,
 		}
-		for ; isConnReset(err); n, sz, err = read() {
+		for ; isConnReset(err); reader, sz, err = read() {
 			dur := b.Duration()
 			time.Sleep(dur)
 		}
 	}
 
-	return n, sz, err
+	return reader, sz, err
 }
 
 func isConnReset(err error) bool {

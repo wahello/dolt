@@ -411,7 +411,7 @@ func ReadTableIndex(rd io.ReadSeeker) (onHeapTableIndex, error) {
 	tuplesSize := int64(chunkCount) * prefixTupleSize
 	indexSize := suffixesSize + lengthsSize + tuplesSize
 
-	_, err = rd.Seek(-(indexSize + footerSize), io.SeekEnd)
+	_, err = rd.Seek(-(indexSize + int64(footerSize)), io.SeekEnd)
 	if err != nil {
 		return onHeapTableIndex{}, ErrInvalidTableFile
 	}
