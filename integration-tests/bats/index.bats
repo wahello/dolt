@@ -2297,7 +2297,7 @@ SQL
     dolt checkout main
     dolt merge other
     dolt conflicts resolve onepk 4
-    dolt sql --disable-batch <<SQL
+    dolt sql  <<SQL
 set autocommit = off;
 UPDATE onepk SET v1 = -11, v2 = 11 WHERE pk1 = 1;
 UPDATE onepk SET v1 = -22, v2 = 22 WHERE pk1 = 2;
@@ -2598,4 +2598,18 @@ SQL
     [[ "$output" =~ "aAaa" ]] || false
     [[ "$output" =~ "Bbbb" ]] || false
     [[ "$output" =~ "bBbb" ]] || false
+}
+
+@test "index: alter table create index for different database" {
+    skip "create index for different database fix in progress"
+    dolt sql  <<SQL
+CREATE DATABASE public;
+CREATE TABLE public.test (pk integer NOT NULL, c1 integer);
+ALTER TABLE public.test ADD CONSTRAINT index_test_pkey PRIMARY KEY (pk);
+CREATE INDEX index_test_c1_idx ON public.test (c1);
+SQL
+
+    run dolt sql -q "show create table public.test"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "KEY \`index_test_c1_idx\`" ]] || false
 }

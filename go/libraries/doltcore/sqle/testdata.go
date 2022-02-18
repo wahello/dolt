@@ -537,11 +537,11 @@ func UpdateTables(t *testing.T, ctx context.Context, root *doltdb.RootValue, tbl
 		var indexData durable.IndexSet
 		require.NoError(t, err)
 		if tbl != nil {
-			indexData, err = tbl.GetIndexData(ctx)
+			indexData, err = tbl.GetIndexSet(ctx)
 			require.NoError(t, err)
 		}
 
-		tbl, err = doltdb.NewTable(ctx, root.VRW(), sch, rowData, indexData, nil)
+		tbl, err = doltdb.NewNomsTable(ctx, root.VRW(), sch, rowData, indexData, nil)
 		require.NoError(t, err)
 
 		root, err = root.PutTable(ctx, tblName, tbl)

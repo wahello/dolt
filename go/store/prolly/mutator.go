@@ -21,20 +21,17 @@ import (
 )
 
 type mutationIter interface {
-	nextMutation() (key, val val.Tuple)
-	count() int
+	nextMutation(ctx context.Context) (key, value val.Tuple)
 	close() error
 }
 
-var _ mutationIter = memTupleCursor{}
+var _ mutationIter = &memRangeIter{}
 
 func materializeMutations(ctx context.Context, m Map, edits mutationIter) (Map, error) {
-	var err error
-	if edits.count() == 0 {
-		return m, err
+	newKey, newValue := edits.nextMutation(ctx)
+	if newKey == nil {
+		return m, nil // no mutations
 	}
-
-	newKey, newValue := edits.nextMutation()
 
 	cur, err := newCursorAtItem(ctx, m.ns, m.root, nodeItem(newKey), m.searchNode)
 	if err != nil {
@@ -58,18 +55,18 @@ func materializeMutations(ctx context.Context, m Map, edits mutationIter) (Map, 
 		if cur.valid() {
 			// compare mutations |newKey| and |newValue|
 			// to the existing pair from the cursor
-			k, v := getKeyValuePair(ctx, cur)
+			k, v := getKeyValuePair(cur)
 			if compareKeys(m, newKey, k) == 0 {
 				oldValue = v
 			}
 		}
 
 		if oldValue == nil && newValue == nil {
-			newKey, newValue = edits.nextMutation()
+			newKey, newValue = edits.nextMutation(ctx)
 			continue // already non-present
 		}
 		if oldValue != nil && compareValues(m, newValue, oldValue) == 0 {
-			newKey, newValue = edits.nextMutation()
+			newKey, newValue = edits.nextMutation(ctx)
 			continue // same newValue
 		}
 
@@ -94,7 +91,7 @@ func materializeMutations(ctx context.Context, m Map, edits mutationIter) (Map, 
 			}
 		}
 
-		newKey, newValue = edits.nextMutation()
+		newKey, newValue = edits.nextMutation(ctx)
 	}
 
 	m.root, err = chunker.Done(ctx)
@@ -105,9 +102,9 @@ func materializeMutations(ctx context.Context, m Map, edits mutationIter) (Map, 
 	return m, nil
 }
 
-func getKeyValuePair(ctx context.Context, cur *nodeCursor) (key, value val.Tuple) {
-	p := cur.currentPair()
-	key, value = val.Tuple(p.key()), val.Tuple(p.value())
+func getKeyValuePair(cur *nodeCursor) (key, value val.Tuple) {
+	key = val.Tuple(cur.currentKey())
+	value = val.Tuple(cur.currentValue())
 	return
 }
 

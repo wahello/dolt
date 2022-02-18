@@ -25,25 +25,45 @@ import (
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
+	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/typed/noms"
+	"github.com/dolthub/dolt/go/store/prolly"
 	"github.com/dolthub/dolt/go/store/types"
 )
+
+func PartitionIndexedTableRows(ctx *sql.Context, idx sql.Index, part sql.Partition, pkSch sql.PrimaryKeySchema, columns []string) (sql.RowIter, error) {
+	rp := part.(rangePartition)
+	doltIdx := idx.(DoltIndex)
+
+	if types.IsFormat_DOLT_1(rp.rows.Format()) {
+		covers := indexCoversCols(doltIdx, columns)
+		if covers {
+			return newProllyCoveringIndexIter(ctx, doltIdx, rp.prollyRange, pkSch)
+		} else {
+			return newProllyIndexIter(ctx, doltIdx, rp.prollyRange, columns)
+		}
+	}
+
+	ranges := []*noms.ReadRange{rp.nomsRange}
+	return RowIterForRanges(ctx, doltIdx, ranges, rp.rows, columns)
+}
 
 func RowIterForIndexLookup(ctx *sql.Context, ilu sql.IndexLookup, columns []string) (sql.RowIter, error) {
 	lookup := ilu.(*doltIndexLookup)
 	idx := lookup.idx
 
-	return RowIterForRanges(ctx, idx, lookup.ranges, lookup.IndexRowData(), columns)
+	return RowIterForRanges(ctx, idx, lookup.nomsRanges, lookup.IndexRowData(), columns)
 }
 
 func RowIterForRanges(ctx *sql.Context, idx DoltIndex, ranges []*noms.ReadRange, rowData durable.Index, columns []string) (sql.RowIter, error) {
-	nrr := noms.NewNomsRangeReader(idx.IndexSchema(), durable.NomsMapFromIndex(rowData), ranges)
+	m := durable.NomsMapFromIndex(rowData)
+	nrr := noms.NewNomsRangeReader(idx.IndexSchema(), m, ranges)
 
 	covers := indexCoversCols(idx, columns)
 	if covers {
 		return NewCoveringIndexRowIterAdapter(ctx, idx, nrr, columns), nil
 	} else {
-		return NewIndexLookupRowIterAdapter(ctx, idx, nrr), nil
+		return NewIndexLookupRowIterAdapter(ctx, idx, nrr)
 	}
 }
 
@@ -52,7 +72,19 @@ func indexCoversCols(idx DoltIndex, cols []string) bool {
 		return false
 	}
 
-	idxCols := idx.IndexSchema().GetPKCols()
+	var idxCols *schema.ColCollection
+	if types.IsFormat_DOLT_1(idx.Format()) {
+		// prolly indexes can cover an index lookup using
+		// both the key and value fields of the index,
+		// this allows using covering index machinery for
+		// primary key index lookups.
+		idxCols = idx.IndexSchema().GetAllCols()
+	} else {
+		// to cover an index lookup, noms indexes must
+		// contain all fields in the index's key.
+		idxCols = idx.IndexSchema().GetPKCols()
+	}
+
 	covers := true
 	for _, colName := range cols {
 		if _, ok := idxCols.GetByNameCaseInsensitive(colName); !ok {
@@ -73,27 +105,23 @@ func DoltIndexFromLookup(lookup sql.IndexLookup) DoltIndex {
 	return lookup.(*doltIndexLookup).idx
 }
 
-func PartitionIndexedTableRows(ctx *sql.Context, idx sql.Index, projectedCols []string, part sql.Partition) (sql.RowIter, error) {
-	rp := part.(rangePartition)
-	ranges := []*noms.ReadRange{rp.partitionRange}
-	return RowIterForRanges(ctx, idx.(DoltIndex), ranges, rp.rowData, projectedCols)
-}
-
 func NewRangePartitionIter(lookup sql.IndexLookup) sql.PartitionIter {
 	dlu := lookup.(*doltIndexLookup)
 	return &rangePartitionIter{
-		ranges:  dlu.ranges,
-		curr:    0,
-		mu:      &sync.Mutex{},
-		rowData: dlu.IndexRowData(),
+		nomsRanges:   dlu.nomsRanges,
+		prollyRanges: dlu.prollyRanges,
+		curr:         0,
+		mu:           &sync.Mutex{},
+		rowData:      dlu.IndexRowData(),
 	}
 }
 
 type rangePartitionIter struct {
-	ranges  []*noms.ReadRange
-	curr    int
-	mu      *sync.Mutex
-	rowData durable.Index
+	nomsRanges   []*noms.ReadRange
+	prollyRanges []prolly.Range
+	curr         int
+	mu           *sync.Mutex
+	rowData      durable.Index
 }
 
 // Close is required by the sql.PartitionIter interface. Does nothing.
@@ -106,32 +134,62 @@ func (itr *rangePartitionIter) Next(_ *sql.Context) (sql.Partition, error) {
 	itr.mu.Lock()
 	defer itr.mu.Unlock()
 
-	if itr.curr >= len(itr.ranges) {
+	if types.IsFormat_DOLT_1(itr.rowData.Format()) {
+		return itr.nextProllyPartition()
+	}
+	return itr.nextNomsPartition()
+}
+
+func (itr *rangePartitionIter) nextProllyPartition() (sql.Partition, error) {
+	if itr.curr >= len(itr.prollyRanges) {
 		return nil, io.EOF
 	}
 
 	var bytes [4]byte
 	binary.BigEndian.PutUint32(bytes[:], uint32(itr.curr))
-	part := rangePartition{itr.ranges[itr.curr], bytes[:], itr.rowData}
+	pr := itr.prollyRanges[itr.curr]
 	itr.curr += 1
 
-	return part, nil
+	return rangePartition{
+		prollyRange: pr,
+		key:         bytes[:],
+		rows:        itr.rowData,
+	}, nil
+}
+
+func (itr *rangePartitionIter) nextNomsPartition() (sql.Partition, error) {
+	if itr.curr >= len(itr.nomsRanges) {
+		return nil, io.EOF
+	}
+
+	var bytes [4]byte
+	binary.BigEndian.PutUint32(bytes[:], uint32(itr.curr))
+	nr := itr.nomsRanges[itr.curr]
+	itr.curr += 1
+
+	return rangePartition{
+		nomsRange: nr,
+		key:       bytes[:],
+		rows:      itr.rowData,
+	}, nil
 }
 
 type rangePartition struct {
-	partitionRange *noms.ReadRange
-	keyBytes       []byte
-	rowData        durable.Index
+	nomsRange   *noms.ReadRange
+	prollyRange prolly.Range
+	key         []byte
+	rows        durable.Index
 }
 
 func (rp rangePartition) Key() []byte {
-	return rp.keyBytes
+	return rp.key
 }
 
 type doltIndexLookup struct {
-	idx       DoltIndex
-	ranges    []*noms.ReadRange
-	sqlRanges sql.RangeCollection
+	idx          DoltIndex
+	nomsRanges   []*noms.ReadRange
+	prollyRanges []prolly.Range
+	sqlRanges    sql.RangeCollection
 }
 
 var _ sql.IndexLookup = (*doltIndexLookup)(nil)
@@ -181,23 +239,6 @@ func (il *doltIndexLookup) Index() sql.Index {
 // Ranges implements the interface sql.IndexLookup
 func (il *doltIndexLookup) Ranges() sql.RangeCollection {
 	return il.sqlRanges
-}
-
-func (il *doltIndexLookup) indexCoversCols(cols []string) bool {
-	if cols == nil {
-		return false
-	}
-
-	idxCols := il.idx.IndexSchema().GetPKCols()
-	covers := true
-	for _, colName := range cols {
-		if _, ok := idxCols.GetByNameCaseInsensitive(colName); !ok {
-			covers = false
-			break
-		}
-	}
-
-	return covers
 }
 
 // Between returns whether the given types.Value is between the bounds. In addition, this returns if the value is outside

@@ -33,6 +33,7 @@ import (
 	"github.com/dolthub/dolt/go/cmd/dolt/commands/engine"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	_ "github.com/dolthub/dolt/go/libraries/doltcore/sqle/dfunctions"
+	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/privileges"
 )
 
 // Serve starts a MySQL-compatible server. Returns any errors that were encountered.
@@ -68,6 +69,9 @@ func Serve(
 	if startError = ValidateConfig(serverConfig); startError != nil {
 		return startError, nil
 	}
+
+	lgr := logrus.StandardLogger()
+	lgr.Out = cli.CliErr
 
 	if serverConfig.LogLevel() != LogLevel_Info {
 		var level logrus.Level
@@ -161,8 +165,15 @@ func Serve(
 	serverConf.TLSConfig = tlsConfig
 	serverConf.RequireSecureTransport = serverConfig.RequireSecureTransport()
 
+	if serverConfig.PrivilegeFilePath() != "" {
+		privileges.SetFilePath(serverConfig.PrivilegeFilePath())
+	}
+	users, roles, err := privileges.LoadPrivileges()
+	if err != nil {
+		return err, nil
+	}
 	var tempUsers []gms.TemporaryUser
-	if len(serverConfig.User()) > 0 {
+	if len(users) == 0 && len(serverConfig.User()) > 0 {
 		tempUsers = append(tempUsers, gms.TemporaryUser{
 			Username: serverConfig.User(),
 			Password: serverConfig.Password(),
@@ -174,8 +185,15 @@ func Serve(
 	}
 	defer sqlEngine.Close()
 
+	sqlEngine.GetUnderlyingEngine().Analyzer.Catalog.GrantTables.SetPersistCallback(privileges.SavePrivileges)
+	err = sqlEngine.GetUnderlyingEngine().Analyzer.Catalog.GrantTables.LoadData(sql.NewEmptyContext(), users, roles)
+	if err != nil {
+		return err, nil
+	}
+
 	labels := serverConfig.MetricsLabels()
 	listener := newMetricsListener(labels)
+	defer listener.Close()
 
 	mySQLServer, startError = server.NewServer(
 		serverConf,
@@ -232,9 +250,15 @@ func portInUse(hostPort string) bool {
 
 func newSessionBuilder(se *engine.SqlEngine) server.SessionBuilder {
 	return func(ctx context.Context, conn *mysql.Conn, host string) (sql.Session, error) {
-		client := sql.Client{Address: conn.RemoteAddr().String(), User: conn.User, Capabilities: conn.Capabilities}
-		mysqlSess := sql.NewBaseSessionWithClientServer(host, client, conn.ConnectionID)
+		mysqlSess, err := server.DefaultSessionBuilder(ctx, conn, host)
+		if err != nil {
+			return nil, err
+		}
+		mysqlBaseSess, ok := mysqlSess.(*sql.BaseSession)
+		if !ok {
+			return nil, fmt.Errorf("unknown GMS base session type")
+		}
 
-		return se.NewDoltSession(ctx, mysqlSess)
+		return se.NewDoltSession(ctx, mysqlBaseSess)
 	}
 }

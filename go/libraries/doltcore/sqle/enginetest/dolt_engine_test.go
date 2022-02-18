@@ -26,6 +26,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
 	"github.com/dolthub/dolt/go/libraries/utils/config"
+	"github.com/dolthub/dolt/go/store/types"
 )
 
 func init() {
@@ -59,6 +60,7 @@ func TestSingleQuery(t *testing.T) {
 
 	harness := newDoltHarness(t)
 	engine := enginetest.NewEngine(t, harness)
+	enginetest.CreateIndexes(t, harness, engine)
 	engine.Analyzer.Debug = true
 	engine.Analyzer.Verbose = true
 
@@ -71,14 +73,20 @@ func TestSingleScript(t *testing.T) {
 
 	var scripts = []enginetest.ScriptTest{
 		{
-			Name: "CrossDB Queries",
+			Name: "insert into sparse auto_increment table",
 			SetUpScript: []string{
-				"create table mytable (i bigint primary key, s varchar(200));",
+				"create table auto (pk int primary key auto_increment)",
+				"insert into auto values (10), (20), (30)",
+				"insert into auto values (NULL)",
+				"insert into auto values (40)",
+				"insert into auto values (0)",
 			},
 			Assertions: []enginetest.ScriptTestAssertion{
 				{
-					Query:    "ALTER TABLE mytable ADD COLUMN s2 TEXT COMMENT 'hello' AFTER i",
-					Expected: nil,
+					Query: "select * from auto order by 1",
+					Expected: []sql.Row{
+						{10}, {20}, {30}, {31}, {40}, {41},
+					},
 				},
 			},
 		},
@@ -102,6 +110,11 @@ func TestVersionedQueries(t *testing.T) {
 // Tests of choosing the correct execution plan independent of result correctness. Mostly useful for confirming that
 // the right indexes are being used for joining tables.
 func TestQueryPlans(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		// todo(andy): unskip after secondary index support
+		t.Skip()
+	}
+
 	// Dolt supports partial keys, so the index matched is different for some plans
 	// TODO: Fix these differences by implementing partial key matching in the memory tables, or the engine itself
 	skipped := []string{
@@ -181,6 +194,11 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestScripts(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		// todo(andy): unskip
+		t.Skip()
+	}
+
 	skipped := []string{
 		"create index r_c0 on r (c0);",
 		// These rely on keyless tables which orders its rows by hash rather than contents, meaning changing types causes different ordering
@@ -199,6 +217,14 @@ func TestScripts(t *testing.T) {
 		"show create table t2",
 	}
 	enginetest.TestScripts(t, newDoltHarness(t).WithSkippedQueries(skipped))
+}
+
+func TestUserPrivileges(t *testing.T) {
+	enginetest.TestUserPrivileges(t, newDoltHarness(t))
+}
+
+func TestUserAuthentication(t *testing.T) {
+	enginetest.TestUserAuthentication(t, newDoltHarness(t))
 }
 
 func TestComplexIndexQueries(t *testing.T) {
@@ -291,6 +317,22 @@ func TestVersionedViews(t *testing.T) {
 	enginetest.TestVersionedViews(t, newDoltHarness(t))
 }
 
+func TestWindowFunctions(t *testing.T) {
+	enginetest.TestWindowFunctions(t, newDoltHarness(t))
+}
+
+func TestWindowRowFrames(t *testing.T) {
+	enginetest.TestWindowRowFrames(t, newDoltHarness(t))
+}
+
+func TestWindowRangeFrames(t *testing.T) {
+	enginetest.TestWindowRangeFrames(t, newDoltHarness(t))
+}
+
+func TestNamedWindows(t *testing.T) {
+	enginetest.TestNamedWindows(t, newDoltHarness(t))
+}
+
 func TestNaturalJoin(t *testing.T) {
 	enginetest.TestNaturalJoin(t, newDoltHarness(t))
 }
@@ -349,12 +391,34 @@ func TestTransactions(t *testing.T) {
 	for _, script := range DoltTransactionTests {
 		enginetest.TestTransactionScript(t, newDoltHarness(t), script)
 	}
+
+	for _, script := range DoltSqlFuncTransactionTests {
+		enginetest.TestTransactionScript(t, newDoltHarness(t), script)
+	}
 }
 
 func TestDoltScripts(t *testing.T) {
 	harness := newDoltHarness(t)
 	for _, script := range DoltScripts {
 		enginetest.TestScript(t, harness, script)
+	}
+}
+
+func TestDoltMerge(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, script := range DoltMerge {
+		enginetest.TestScript(t, harness, script)
+	}
+}
+
+func TestScopedDoltHistorySystemTables(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, test := range ScopedDoltHistoryScriptTests {
+		databases := harness.NewDatabases("mydb")
+		engine := enginetest.NewEngineWithDbs(t, harness, databases)
+		t.Run(test.Name, func(t *testing.T) {
+			enginetest.TestScriptWithEngine(t, engine, harness, test)
+		})
 	}
 }
 
@@ -446,6 +510,19 @@ func TestSingleTransactionScript(t *testing.T) {
 
 func TestSystemTableQueries(t *testing.T) {
 	enginetest.RunQueryTests(t, newDoltHarness(t), BrokenSystemTableQueries)
+}
+
+func TestUnscopedDoltDiffSystemTable(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, test := range UnscopedDiffTableTests {
+		databases := harness.NewDatabases("mydb")
+		engine := enginetest.NewEngineWithDbs(t, harness, databases)
+		engine.Analyzer.Debug = true
+		engine.Analyzer.Verbose = true
+		t.Run(test.Name, func(t *testing.T) {
+			enginetest.TestScriptWithEngine(t, engine, harness, test)
+		})
+	}
 }
 
 func TestTestReadOnlyDatabases(t *testing.T) {

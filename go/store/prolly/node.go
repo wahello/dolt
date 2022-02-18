@@ -15,204 +15,239 @@
 package prolly
 
 import (
+	"fmt"
 	"math"
 
+	fb "github.com/google/flatbuffers/go"
+
+	"github.com/dolthub/dolt/go/gen/fb/serial"
+	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/pool"
 	"github.com/dolthub/dolt/go/store/val"
 )
 
 const (
-	cumulativeCountSize = val.ByteSize(6)
-	nodeCountSize       = val.ByteSize(2)
-	treeLevelSize       = val.ByteSize(1)
+	maxVectorOffset = uint64(math.MaxUint16)
+	refSize         = hash.ByteLen
 
-	maxNodeDataSize = uint64(math.MaxUint16)
+	// These constants are mirrored from serial.TupleMap.KeyOffsetsLength()
+	// and serial.TupleMap.ValueOffsetsLength() respectively.
+	// They are only as stable as the flatbuffers schemas that define them.
+	keyOffsetsVOffset   = 6
+	valueOffsetsVOffset = 10
 )
 
-// Node is a node in a prolly tree. Nodes are byte slices containing node items and
-//   a footer. The footer contains offsets, an item count for the node, a cumulative
-//   item count for the subtree rooted at this node, and this node's tree level.
-//   Prolly trees are organized like a B+ Tree without linked leaf nodes. Internal
-//   Nodes contain only keys and child pointers ("metaKeys" and "metaValues"). Leaf
-//   Nodes contain keys and values. The offsets array enables random acces to items
-//   with in a Node. The cumulative count field allows seeking into the tree by an
-//   item's index number.
-//
-//   Node:
-//     Items in a node are packed contiguously from the front of the byte slice.
-//     For internal Nodes, metaKeys and metaValues are stored in alternating order
-//     as separate items. MetaValues contain a chunk ref that can be resolved to a
-//     child node using a NodeStore. MetaKeys store the largest key Tuple within
-//     the subtree rooted at that child Node.
-//   +--------+--------+-----+--------+--------+
-//   | Item 0 | Item 1 | ... | Item N | Footer |
-//   +--------+--------+--------------+--------+
-//
-//   Footer:
-//   +---------------+------------------+------------+------------+
-//   | Offsets Array | Cumulative Count | Node Count | Tree Level |
-//   +---------------+------------------+------------+------------+
-//
-//   Offsets Array:
-//     The offset array contains a uint16 for each node item after item 0. Offset i
-//     encodes the byte distance from the front of the node to the beginning of the
-//     ith item in the node. The offsets array for N items is 2*(N-1) bytes.
-//   +----------+----------+-----+----------+
-//   | Offset 1 | Offset 2 | ... | Offset N |
-//   +----------+----------+-----+----------+
-//
-//   Cumulative Count:
-//      The cumulative count is the total number of items in the subtree rooted at
-//      this node. For leaf nodes, cumulative count is the same as node count.
-//   +---------------------------+
-//   | Cumulative Count (uint48) |
-//   +---------------------------+
-//
-//   Node Count:
-//      Node count is the number of items in this node.
-//   +---------------------+
-//   | Node Count (uint16) |
-//   +---------------------+
-//
-//   Tree Level:
-//      Tree Level is the height of this node within the tree. Leaf nodes are
-//      level 0, the first level of internal nodes is level 1.
-//   +--------------------+
-//   | Tree Level (uint8) |
-//   +--------------------+
-//
-//   Note: the current Node implementation is oriented toward implementing Map
-//   semantics. However, Node could easily be modified to support Set semantics,
-//   or other collections.
-//
-type Node []byte
-
-type nodeItem []byte
-
-func (i nodeItem) size() val.ByteSize {
-	return val.ByteSize(len(i))
+func init() {
+	emptyNode = buildMapNode(sharedPool, 0, nil, nil)
 }
 
-type nodePair [2]nodeItem
+var emptyNode Node
 
-func (p nodePair) key() nodeItem {
-	return p[0]
+type Node struct {
+	keys, values val.SlicedBuffer
+	refs         refBuffer
+	count, level int
+
+	buf serial.TupleMap
 }
 
-func (p nodePair) value() nodeItem {
-	return p[1]
+func mapNodeFromBytes(bb []byte) Node {
+	buf := serial.GetRootAsTupleMap(bb, 0)
+	return mapNodeFromFlatbuffer(*buf)
 }
 
-func makeProllyNode(pool pool.BuffPool, level uint64, items ...nodeItem) (node Node) {
-	var sz uint64
-	for _, item := range items {
-		sz += uint64(item.size())
-
+func mapNodeFromFlatbuffer(buf serial.TupleMap) Node {
+	keys := val.SlicedBuffer{
+		Buf:  buf.KeyTuplesBytes(),
+		Offs: getKeyOffsetsVector(buf),
 	}
-	count := len(items)
-
-	if sz > maxNodeDataSize {
-		panic("items exceeded max chunk data size")
+	values := val.SlicedBuffer{
+		Buf:  buf.ValueTuplesBytes(),
+		Offs: getValueOffsetsVector(buf),
+	}
+	refs := refBuffer{
+		buf: buf.RefArrayBytes(),
 	}
 
-	pos := val.ByteSize(sz)
-	pos += val.OffsetsSize(count)
-	pos += cumulativeCountSize
-	pos += nodeCountSize
-	pos += treeLevelSize
-
-	node = pool.Get(uint64(pos))
-
-	cc := countCumulativeItems(level, items)
-	writeCumulativeCount(node, cc)
-	writeItemCount(node, count)
-	writeTreeLevel(node, level)
-
-	pos = 0
-	offs, _ := node.offsets()
-	for i, item := range items {
-		copy(node[pos:pos+item.size()], item)
-		offs.Put(i, pos)
-		pos += item.size()
+	count := buf.KeyOffsetsLength() + 1
+	if len(keys.Buf) == 0 {
+		count = 0
 	}
 
-	return node
+	return Node{
+		keys:   keys,
+		values: values,
+		refs:   refs,
+		count:  count,
+		level:  int(buf.TreeLevel()),
+		buf:    buf,
+	}
 }
 
-func countCumulativeItems(level uint64, items []nodeItem) (c uint64) {
+func buildMapNode(pool pool.BuffPool, level uint64, keys, values []nodeItem) (node Node) {
+	var (
+		keyTups, keyOffs fb.UOffsetT
+		valTups, valOffs fb.UOffsetT
+		refArr           fb.UOffsetT
+	)
+
+	keySz, valSz, bufSz := measureNodeSize(keys, values)
+	b := getMapBuilder(pool, bufSz)
+
+	// serialize keys and offsets
+	keyTups = writeItemBytes(b, keys, keySz)
+	serial.TupleMapStartKeyOffsetsVector(b, len(keys)-1)
+	keyOffs = b.EndVector(writeItemOffsets(b, keys, keySz))
+
 	if level == 0 {
-		return uint64(len(items))
+		// serialize ref tuples for leaf nodes
+		valTups = writeItemBytes(b, values, valSz)
+		serial.TupleMapStartValueOffsetsVector(b, len(values)-1)
+		valOffs = b.EndVector(writeItemOffsets(b, values, valSz))
+	} else {
+		// serialize child refs for internal nodes
+		refArr = writeItemBytes(b, values, valSz)
 	}
 
-	for i := 1; i < len(items); i += 2 {
-		c += metaValue(items[i]).GetCumulativeCount()
+	// populate the node's vtable
+	serial.TupleMapStart(b)
+	serial.TupleMapAddKeyTuples(b, keyTups)
+	serial.TupleMapAddKeyOffsets(b, keyOffs)
+	if level == 0 {
+		serial.TupleMapAddValueTuples(b, valTups)
+		serial.TupleMapAddValueOffsets(b, valOffs)
+	} else {
+		serial.TupleMapAddRefArray(b, refArr)
 	}
-	return c
+	serial.TupleMapAddKeyFormat(b, serial.TupleFormatV1)
+	serial.TupleMapAddValueFormat(b, serial.TupleFormatV1)
+	serial.TupleMapAddTreeLevel(b, byte(level))
+	// todo(andy): tree count
+	b.Finish(serial.TupleMapEnd(b))
+
+	return mapNodeFromBytes(b.FinishedBytes())
 }
 
-func (nd Node) getItem(i int) nodeItem {
-	offs, itemStop := nd.offsets()
-	start, stop := offs.GetBounds(i, itemStop)
-	return nodeItem(nd[start:stop])
+func (nd Node) hashOf() hash.Hash {
+	return hash.Of(nd.bytes())
 }
 
-func (nd Node) getPair(i int) (p nodePair) {
-	offs, itemStop := nd.offsets()
-	start, stop := offs.GetBounds(i, itemStop)
-	p[0] = nodeItem(nd[start:stop])
-	start, stop = offs.GetBounds(i+1, itemStop)
-	p[1] = nodeItem(nd[start:stop])
-	return
+func (nd Node) getKey(i int) nodeItem {
+	return nd.keys.GetSlice(i)
 }
 
-func (nd Node) size() val.ByteSize {
-	return val.ByteSize(len(nd))
+func (nd Node) getValue(i int) nodeItem {
+	if nd.leafNode() {
+		return nd.values.GetSlice(i)
+	} else {
+		r := nd.getRef(i)
+		return r[:]
+	}
 }
 
-func (nd Node) level() int {
-	sl := nd[nd.size()-treeLevelSize:]
-	return int(val.ReadUint8(sl))
+func (nd Node) getRef(i int) hash.Hash {
+	return nd.refs.getRef(i)
 }
 
 func (nd Node) nodeCount() int {
-	stop := nd.size() - treeLevelSize
-	start := stop - nodeCountSize
-	return int(val.ReadUint16(nd[start:stop]))
+	return nd.count
 }
 
-func (nd Node) cumulativeCount() uint64 {
-	stop := nd.size() - treeLevelSize - nodeCountSize
-	start := stop - cumulativeCountSize
-	buf := nd[start:stop]
-	return val.ReadUint48(buf)
-}
-
-func (nd Node) offsets() (offs val.Offsets, itemStop val.ByteSize) {
-	stop := nd.size() - treeLevelSize - nodeCountSize - cumulativeCountSize
-	itemStop = stop - val.OffsetsSize(nd.nodeCount())
-	return val.Offsets(nd[itemStop:stop]), itemStop
-}
+// todo(andy): should we support this?
+//func (nd Node) cumulativeCount() uint64 {
+//	return nd.buf.TreeCount()
+//}
 
 func (nd Node) leafNode() bool {
-	return nd.level() == 0
+	return nd.level == 0
 }
 
 func (nd Node) empty() bool {
-	return len(nd) == 0 || nd.nodeCount() == 0
+	return nd.bytes() == nil || nd.nodeCount() == 0
 }
 
-func writeTreeLevel(nd Node, level uint64) {
-	nd[nd.size()-treeLevelSize] = uint8(level)
+func (nd Node) bytes() []byte {
+	return nd.buf.Table().Bytes
 }
 
-func writeItemCount(nd Node, count int) {
-	stop := nd.size() - treeLevelSize
-	start := stop - nodeCountSize
-	val.WriteUint16(nd[start:stop], uint16(count))
+type refBuffer struct {
+	buf []byte
 }
 
-func writeCumulativeCount(nd Node, count uint64) {
-	stop := nd.size() - treeLevelSize - nodeCountSize
-	start := stop - cumulativeCountSize
-	val.WriteUint48(nd[start:stop], count)
+func (rb refBuffer) getRef(i int) hash.Hash {
+	start, stop := i*refSize, (i+1)*refSize
+	return hash.New(rb.buf[start:stop])
+}
+
+func getMapBuilder(pool pool.BuffPool, sz int) *fb.Builder {
+	// todo(andy): initialize builder buffer from pool
+	return fb.NewBuilder(sz)
+}
+
+// measureNodeSize returns the exact size of the tuple vectors for keys and values,
+// and an estimate of the overall size of the final flatbuffer.
+func measureNodeSize(keys, values []nodeItem) (keySz, valSz, bufSz int) {
+	for i := range keys {
+		keySz += len(keys[i])
+		valSz += len(values[i])
+	}
+
+	// constraints enforced upstream
+	if keySz > int(maxVectorOffset) {
+		panic(fmt.Sprintf("key vector exceeds size limit ( %d > %d )", keySz, maxVectorOffset))
+	}
+	if valSz > int(maxVectorOffset) {
+		panic(fmt.Sprintf("value vector exceeds size limit ( %d > %d )", valSz, maxVectorOffset))
+	}
+
+	bufSz += keySz + valSz               // tuples
+	bufSz += len(keys)*2 + len(values)*2 // offsets
+	bufSz += 8 + 1 + 1 + 1               // metadata
+	bufSz += 72                          // vtable (approx)
+
+	return
+}
+
+func writeItemBytes(b *fb.Builder, items []nodeItem, sumSz int) fb.UOffsetT {
+	b.Prep(fb.SizeUOffsetT, sumSz)
+
+	stop := int(b.Head())
+	start := stop - sumSz
+	for _, item := range items {
+		copy(b.Bytes[start:stop], item)
+		start += len(item)
+	}
+
+	start = stop - sumSz
+	return b.CreateByteVector(b.Bytes[start:stop])
+}
+
+func writeItemOffsets(b *fb.Builder, items []nodeItem, sz int) (cnt int) {
+	off := sz
+	for i := len(items) - 1; i > 0; i-- { // omit first offset
+		off -= len(items[i])
+		b.PrependUint16(uint16(off))
+		cnt++
+	}
+	return
+}
+
+func getKeyOffsetsVector(buf serial.TupleMap) []byte {
+	sz := buf.KeyOffsetsLength() * 2
+	tab := buf.Table()
+	vec := tab.Offset(keyOffsetsVOffset)
+	start := int(tab.Vector(fb.UOffsetT(vec)))
+	stop := start + sz
+
+	return tab.Bytes[start:stop]
+}
+
+func getValueOffsetsVector(buf serial.TupleMap) []byte {
+	sz := buf.ValueOffsetsLength() * 2
+	tab := buf.Table()
+	vec := tab.Offset(valueOffsetsVOffset)
+	start := int(tab.Vector(fb.UOffsetT(vec)))
+	stop := start + sz
+
+	return tab.Bytes[start:stop]
 }

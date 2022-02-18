@@ -687,7 +687,7 @@ func (te *pkTableEditor) Table(ctx context.Context) (*doltdb.Table, error) {
 			return err
 		}
 
-		newTable, err := te.t.UpdateRows(ctx, updatedMap)
+		newTable, err := te.t.UpdateNomsRows(ctx, updatedMap)
 		if err != nil {
 			return err
 		}
@@ -717,7 +717,7 @@ func (te *pkTableEditor) Table(ctx context.Context) (*doltdb.Table, error) {
 				err = idxErr
 				return
 			}
-			tbl, idxErr = tbl.SetIndexRowData(ctx, te.indexEds[i].Index().Name(), indexMap)
+			tbl, idxErr = tbl.SetNomsIndexRows(ctx, te.indexEds[i].Index().Name(), indexMap)
 			if idxErr != nil {
 				err = idxErr
 				return

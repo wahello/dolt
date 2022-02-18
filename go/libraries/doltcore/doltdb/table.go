@@ -48,8 +48,7 @@ var (
 	foreignKeyNameRegex = regexp.MustCompile(ForeignKeyNameRegexStr)
 	indexNameRegex      = regexp.MustCompile(IndexNameRegexStr)
 
-	ErrNoConflictsResolved  = errors.New("no conflicts resolved")
-	ErrNoAutoIncrementValue = fmt.Errorf("auto increment set for non-numeric column type")
+	ErrNoConflictsResolved = errors.New("no conflicts resolved")
 )
 
 // IsValidTableName returns true if the name matches the regular expression TableNameRegexStr.
@@ -73,9 +72,19 @@ type Table struct {
 	table durable.Table
 }
 
-// NewTable creates a noms Struct which stores row data, index data, and schema.
-func NewTable(ctx context.Context, vrw types.ValueReadWriter, sch schema.Schema, rowData types.Map, indexes durable.IndexSet, autoIncVal types.Value) (*Table, error) {
-	dt, err := durable.NewNomsTable(ctx, vrw, sch, rowData, indexes, autoIncVal)
+// NewNomsTable creates a noms Struct which stores row data, index data, and schema.
+func NewNomsTable(ctx context.Context, vrw types.ValueReadWriter, sch schema.Schema, rows types.Map, indexes durable.IndexSet, autoIncVal types.Value) (*Table, error) {
+	dt, err := durable.NewNomsTable(ctx, vrw, sch, rows, indexes, autoIncVal)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Table{table: dt}, nil
+}
+
+// NewTable creates a durable object which stores row data, index data, and schema.
+func NewTable(ctx context.Context, vrw types.ValueReadWriter, sch schema.Schema, rows durable.Index, indexes durable.IndexSet, autoIncVal types.Value) (*Table, error) {
+	dt, err := durable.NewTable(ctx, vrw, sch, rows, indexes, autoIncVal)
 	if err != nil {
 		return nil, err
 	}
@@ -216,10 +225,22 @@ func (t *Table) HashOf() (hash.Hash, error) {
 	return t.table.HashOf()
 }
 
-// UpdateRows replaces the current row data and returns and updated Table.  Calls to UpdateRows will not be written to the
-// database.  The root must be updated with the updated table, and the root must be committed or written.
-func (t *Table) UpdateRows(ctx context.Context, updatedRows types.Map) (*Table, error) {
+// UpdateNomsRows replaces the current row data and returns and updated Table.
+// Calls to UpdateNomsRows will not be written to the database.  The root must
+// be updated with the updated table, and the root must be committed or written.
+func (t *Table) UpdateNomsRows(ctx context.Context, updatedRows types.Map) (*Table, error) {
 	table, err := t.table.SetTableRows(ctx, durable.IndexFromNomsMap(updatedRows, t.ValueReadWriter()))
+	if err != nil {
+		return nil, err
+	}
+	return &Table{table: table}, nil
+}
+
+// UpdateRows replaces the current row data and returns and updated Table.
+// Calls to UpdateRows will not be written to the database. The root must
+// be updated with the updated table, and the root must be committed or written.
+func (t *Table) UpdateRows(ctx context.Context, updatedRows durable.Index) (*Table, error) {
+	table, err := t.table.SetTableRows(ctx, updatedRows)
 	if err != nil {
 		return nil, err
 	}
@@ -286,13 +307,13 @@ func (t *Table) ResolveConflicts(ctx context.Context, pkTuples []types.Value) (i
 	return invalid, notFound, &Table{table: table}, nil
 }
 
-// GetIndexData returns the internal index map which goes from index name to a ref of the row data map.
-func (t *Table) GetIndexData(ctx context.Context) (durable.IndexSet, error) {
+// GetIndexSet returns the internal index map which goes from index name to a ref of the row data map.
+func (t *Table) GetIndexSet(ctx context.Context) (durable.IndexSet, error) {
 	return t.table.GetIndexes(ctx)
 }
 
-// SetIndexData replaces the current internal index map, and returns an updated Table.
-func (t *Table) SetIndexData(ctx context.Context, indexes durable.IndexSet) (*Table, error) {
+// SetIndexSet replaces the current internal index map, and returns an updated Table.
+func (t *Table) SetIndexSet(ctx context.Context, indexes durable.IndexSet) (*Table, error) {
 	table, err := t.table.SetIndexes(ctx, indexes)
 	if err != nil {
 		return nil, err
@@ -302,12 +323,17 @@ func (t *Table) SetIndexData(ctx context.Context, indexes durable.IndexSet) (*Ta
 
 // GetNomsIndexRowData retrieves the underlying map of an index, in which the primary key consists of all indexed columns.
 func (t *Table) GetNomsIndexRowData(ctx context.Context, indexName string) (types.Map, error) {
-	indexes, err := t.GetIndexData(ctx)
+	sch, err := t.GetSchema(ctx)
 	if err != nil {
 		return types.EmptyMap, err
 	}
 
-	idx, err := indexes.GetIndex(ctx, indexName)
+	indexes, err := t.GetIndexSet(ctx)
+	if err != nil {
+		return types.EmptyMap, err
+	}
+
+	idx, err := indexes.GetIndex(ctx, sch, indexName)
 	if err != nil {
 		return types.EmptyMap, err
 	}
@@ -317,17 +343,37 @@ func (t *Table) GetNomsIndexRowData(ctx context.Context, indexName string) (type
 
 // GetIndexRowData retrieves the underlying map of an index, in which the primary key consists of all indexed columns.
 func (t *Table) GetIndexRowData(ctx context.Context, indexName string) (durable.Index, error) {
-	indexes, err := t.GetIndexData(ctx)
+	sch, err := t.GetSchema(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return indexes.GetIndex(ctx, indexName)
+	indexes, err := t.GetIndexSet(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return indexes.GetIndex(ctx, sch, indexName)
 }
 
-// SetIndexRowData replaces the current row data for the given index and returns an updated Table.
-func (t *Table) SetIndexRowData(ctx context.Context, indexName string, idx types.Map) (*Table, error) {
-	indexes, err := t.GetIndexData(ctx)
+// SetNomsIndexRows replaces the current row data for the given index and returns an updated Table.
+func (t *Table) SetIndexRows(ctx context.Context, indexName string, idx durable.Index) (*Table, error) {
+	indexes, err := t.GetIndexSet(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	indexes, err = indexes.PutIndex(ctx, indexName, idx)
+	if err != nil {
+		return nil, err
+	}
+
+	return t.SetIndexSet(ctx, indexes)
+}
+
+// SetNomsIndexRows replaces the current row data for the given index and returns an updated Table.
+func (t *Table) SetNomsIndexRows(ctx context.Context, indexName string, idx types.Map) (*Table, error) {
+	indexes, err := t.GetIndexSet(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -337,14 +383,14 @@ func (t *Table) SetIndexRowData(ctx context.Context, indexName string, idx types
 		return nil, err
 	}
 
-	return t.SetIndexData(ctx, indexes)
+	return t.SetIndexSet(ctx, indexes)
 }
 
 // DeleteIndexRowData removes the underlying map of an index, along with its key entry. This should only be used
-// when removing an index altogether. If the intent is to clear an index's data, then use SetIndexRowData with
+// when removing an index altogether. If the intent is to clear an index's data, then use SetNomsIndexRows with
 // an empty map.
 func (t *Table) DeleteIndexRowData(ctx context.Context, indexName string) (*Table, error) {
-	indexes, err := t.GetIndexData(ctx)
+	indexes, err := t.GetIndexSet(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -354,33 +400,23 @@ func (t *Table) DeleteIndexRowData(ctx context.Context, indexName string) (*Tabl
 		return nil, err
 	}
 
-	return t.SetIndexData(ctx, indexes)
+	return t.SetIndexSet(ctx, indexes)
 }
 
 // RenameIndexRowData changes the name for the index data. Does not verify that the new name is unoccupied. If the old
 // name does not exist, then this returns the called table without error.
 func (t *Table) RenameIndexRowData(ctx context.Context, oldIndexName, newIndexName string) (*Table, error) {
-	indexes, err := t.GetIndexData(ctx)
+	indexes, err := t.GetIndexSet(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	im, err := indexes.GetIndex(ctx, oldIndexName)
+	indexes, err = indexes.RenameIndex(ctx, oldIndexName, newIndexName)
 	if err != nil {
 		return nil, err
 	}
 
-	indexes, err = indexes.DropIndex(ctx, oldIndexName)
-	if err != nil {
-		return nil, err
-	}
-
-	indexes, err = indexes.PutIndex(ctx, newIndexName, im)
-	if err != nil {
-		return nil, err
-	}
-
-	return t.SetIndexData(ctx, indexes)
+	return t.SetIndexSet(ctx, indexes)
 }
 
 // VerifyIndexRowData verifies that the index with the given name's data matches what the index expects.
@@ -395,12 +431,12 @@ func (t *Table) VerifyIndexRowData(ctx context.Context, indexName string) error 
 		return fmt.Errorf("index `%s` does not exist", indexName)
 	}
 
-	indexes, err := t.GetIndexData(ctx)
+	indexes, err := t.GetIndexSet(ctx)
 	if err != nil {
 		return err
 	}
 
-	idx, err := indexes.GetIndex(ctx, indexName)
+	idx, err := indexes.GetIndex(ctx, sch, indexName)
 	if err != nil {
 		return err
 	}

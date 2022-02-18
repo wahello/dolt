@@ -33,6 +33,7 @@ import (
 	"github.com/dolthub/dolt/go/store/cmd/noms/util"
 	"github.com/dolthub/dolt/go/store/config"
 	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/datas/pull"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/util/profile"
 	"github.com/dolthub/dolt/go/store/util/status"
@@ -62,7 +63,7 @@ func setupSyncFlags() *flag.FlagSet {
 
 func runSync(ctx context.Context, args []string) int {
 	cfg := config.NewResolver()
-	sourceStore, sourceObj, err := cfg.GetPath(ctx, args[0])
+	sourceStore, sourceVRW, sourceObj, err := cfg.GetPath(ctx, args[0])
 	util.CheckError(err)
 	defer sourceStore.Close()
 
@@ -70,16 +71,16 @@ func runSync(ctx context.Context, args []string) int {
 		util.CheckErrorNoUsage(fmt.Errorf("Object not found: %s", args[0]))
 	}
 
-	sinkDB, sinkDataset, err := cfg.GetDataset(ctx, args[1])
+	sinkDB, _, sinkDataset, err := cfg.GetDataset(ctx, args[1])
 	util.CheckError(err)
 	defer sinkDB.Close()
 
 	start := time.Now()
-	progressCh := make(chan datas.PullProgress)
-	lastProgressCh := make(chan datas.PullProgress)
+	progressCh := make(chan pull.PullProgress)
+	lastProgressCh := make(chan pull.PullProgress)
 
 	go func() {
-		var last datas.PullProgress
+		var last pull.PullProgress
 
 		for info := range progressCh {
 			last = info
@@ -96,14 +97,18 @@ func runSync(ctx context.Context, args []string) int {
 		lastProgressCh <- last
 	}()
 
-	sourceRef, err := types.NewRef(sourceObj, sourceStore.Format())
+	sourceRef, err := types.NewRef(sourceObj, sourceVRW.Format())
 	util.CheckError(err)
 	sinkRef, sinkExists, err := sinkDataset.MaybeHeadRef()
 	util.CheckError(err)
 	nonFF := false
+	srcCS := datas.ChunkStoreFromDatabase(sourceStore)
+	sinkCS := datas.ChunkStoreFromDatabase(sinkDB)
+	wrf, err := types.WalkRefsForChunkStore(srcCS)
+	util.CheckError(err)
 	f := func() error {
 		defer profile.MaybeStartProfile().Stop()
-		err := datas.Pull(ctx, sourceStore, sinkDB, sourceRef, progressCh)
+		err := pull.Pull(ctx, srcCS, sinkCS, wrf, sourceRef.TargetHash(), progressCh)
 
 		if err != nil {
 			return err

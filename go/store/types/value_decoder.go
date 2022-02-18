@@ -29,6 +29,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/dolthub/dolt/go/store/d"
+	"github.com/dolthub/dolt/go/store/geometry"
 )
 
 var ErrUnknownType = errors.New("unknown type $@")
@@ -46,6 +47,9 @@ type CodecReader interface {
 	ReadInlineBlob() []byte
 	ReadTimestamp() (time.Time, error)
 	ReadDecimal() (decimal.Decimal, error)
+	ReadPoint() (Point, error)
+	ReadLinestring() (Linestring, error)
+	ReadPolygon() (Polygon, error)
 	ReadBlob() (Blob, error)
 	ReadJSON() (JSON, error)
 }
@@ -78,6 +82,18 @@ func (r *valueDecoder) ReadBlob() (Blob, error) {
 		return Blob{}, err
 	}
 	return newBlob(seq), nil
+}
+
+func (r *valueDecoder) ReadPoint() (Point, error) {
+	return readPoint(nil, r)
+}
+
+func (r *valueDecoder) ReadLinestring() (Linestring, error) {
+	return readLinestring(nil, r)
+}
+
+func (r *valueDecoder) ReadPolygon() (Polygon, error) {
+	return readPolygon(nil, r)
 }
 
 func (r *valueDecoder) ReadJSON() (JSON, error) {
@@ -356,6 +372,30 @@ func (r *valueDecoder) readValue(nbf *NomsBinFormat) (Value, error) {
 		return r.readTuple(nbf)
 	case JSONKind:
 		return r.ReadJSON()
+	case PointKind:
+		r.skipKind()
+		buf := []byte(r.ReadString())
+		srid, _, geomType := geometry.ParseEWKBHeader(buf)
+		if geomType != geometry.PointType {
+			return nil, ErrUnknownType
+		}
+		return ParseEWKBPoint(buf[geometry.EWKBHeaderSize:], srid), nil
+	case LinestringKind:
+		r.skipKind()
+		buf := []byte(r.ReadString())
+		srid, _, geomType := geometry.ParseEWKBHeader(buf)
+		if geomType != geometry.LinestringType {
+			return nil, ErrUnknownType
+		}
+		return ParseEWKBLine(buf[geometry.EWKBHeaderSize:], srid), nil
+	case PolygonKind:
+		r.skipKind()
+		buf := []byte(r.ReadString())
+		srid, _, geomType := geometry.ParseEWKBHeader(buf)
+		if geomType != geometry.PolygonType {
+			return nil, ErrUnknownType
+		}
+		return ParseEWKBPoly(buf[geometry.EWKBHeaderSize:], srid), nil
 	case TypeKind:
 		r.skipKind()
 		return r.readType()
@@ -403,6 +443,15 @@ func (r *valueDecoder) SkipValue(nbf *NomsBinFormat) error {
 		r.skipKind()
 		r.skipUint()
 	case StringKind:
+		r.skipKind()
+		r.skipString()
+	case PointKind:
+		r.skipKind()
+		r.skipString()
+	case LinestringKind:
+		r.skipKind()
+		r.skipString()
+	case PolygonKind:
 		r.skipKind()
 		r.skipString()
 	case ListKind:
