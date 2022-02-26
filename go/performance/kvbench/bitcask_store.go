@@ -14,27 +14,49 @@
 
 package kvbench
 
-// todo
-func newBitcaskStore() keyValStore {
-	panic("unimplemented")
+import (
+	"git.mills.io/prologic/bitcask"
+)
+
+func newBitcaskStore(path string) keyValStore {
+	store, err := bitcask.Open(path)
+	if err != nil {
+		panic(err)
+	}
+
+	return BitcaskStore{store: store}
 }
 
-type BitcaskStore struct{}
+type BitcaskStore struct {
+	store *bitcask.Bitcask
+}
 
 var _ keyValStore = BitcaskStore{}
 
-func (nbs BitcaskStore) get(key []byte) (val []byte, ok bool) {
-	panic("unimplemented")
+func (bit BitcaskStore) get(key []byte) (val []byte, ok bool) {
+	var err error
+	val, err = bit.store.Get(key)
+	if err != nil {
+		panic(err)
+	}
+	ok = val != nil
+	return
 }
 
-func (nbs BitcaskStore) put(key, val []byte) {
-	panic("unimplemented")
+func (bit BitcaskStore) put(key, value []byte) {
+	if err := bit.store.Put(key, value); err != nil {
+		panic(err)
+	}
 }
 
-func (nbs BitcaskStore) delete(key []byte) {
-	panic("unimplemented")
+func (bit BitcaskStore) delete(key []byte) {
+	if err := bit.store.Delete(key); err != nil {
+		panic(err)
+	}
 }
 
-func (nbs BitcaskStore) putMany(keys, vals [][]byte) {
-	panic("unimplemented")
+func (bit BitcaskStore) putMany(keys, values [][]byte) {
+	for i := range keys {
+		bit.put(keys[i], values[i])
+	}
 }

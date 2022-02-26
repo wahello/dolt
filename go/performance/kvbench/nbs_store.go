@@ -14,21 +14,70 @@
 
 package kvbench
 
-// todo
-func newNBSStore() keyValStore {
-	panic("unimplemented")
-}
+import (
+	"context"
 
-type NBSStore struct{}
+	"github.com/dolthub/dolt/go/store/chunks"
+	"github.com/dolthub/dolt/go/store/hash"
+	"github.com/dolthub/dolt/go/store/nbs"
+	"github.com/dolthub/dolt/go/store/types"
+)
+
+type NBSStore struct {
+	store *nbs.NomsBlockStore
+}
 
 var _ keyValStore = NBSStore{}
 
+func newNBSStore(dir string) keyValStore {
+	ctx := context.Background()
+	verStr := types.Format_Default.VersionString()
+	cs, err := nbs.NewLocalStore(ctx, verStr, dir, defaultMemTableSize)
+	if err != nil {
+		panic(err)
+	}
+
+	return NBSStore{
+		store: cs,
+	}
+}
+
 func (nbs NBSStore) get(key []byte) (val []byte, ok bool) {
-	panic("unimplemented")
+	ctx := context.Background()
+	h := nbs.hashFromKey(key)
+
+	c, err := nbs.store.Get(ctx, h)
+	if err != nil {
+		panic(err)
+	}
+	val = c.Data()
+	ok = !c.IsEmpty()
+	return
 }
 
 func (nbs NBSStore) put(key, val []byte) {
-	panic("unimplemented")
+	ctx := context.Background()
+	h := nbs.putPair(key, val)
+
+	last, err := nbs.store.Root(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	if _, err = nbs.store.Commit(ctx, h, last); err != nil {
+		panic(err)
+	}
+}
+
+func (nbs NBSStore) putPair(key, val []byte) hash.Hash {
+	ctx := context.Background()
+	h := nbs.hashFromKey(key)
+	c := chunks.NewChunkWithHash(h, val)
+
+	if err := nbs.store.Put(ctx, c); err != nil {
+		panic(err)
+	}
+	return h
 }
 
 func (nbs NBSStore) delete(key []byte) {
@@ -36,5 +85,27 @@ func (nbs NBSStore) delete(key []byte) {
 }
 
 func (nbs NBSStore) putMany(keys, vals [][]byte) {
-	panic("unimplemented")
+	ctx := context.Background()
+
+	var h hash.Hash
+	for i := range keys {
+		h = nbs.putPair(keys[i], vals[i])
+	}
+
+	last, err := nbs.store.Root(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	if _, err = nbs.store.Commit(ctx, h, last); err != nil {
+		panic(err)
+	}
+}
+
+func (nbs NBSStore) hashFromKey(key []byte) (h hash.Hash) {
+	if len(key) > len(h) {
+		key = key[:len(h)]
+	}
+	copy(h[:], key)
+	return
 }

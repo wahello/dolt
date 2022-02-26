@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	makeProfile = false
+	makeProfile = true
 )
 
 // usage: `go test -bench BenchmarkMemoryStore`
@@ -53,8 +53,19 @@ func BenchmarkBoltStore(b *testing.B) {
 	benchmarkKVStore(b, newBoltStore(os.TempDir()))
 }
 
+// usage: `go test -bench BenchmarkBitcaskStore`
+func BenchmarkBitcaskStore(b *testing.B) {
+	benchmarkKVStore(b, newBitcaskStore(os.TempDir()))
+}
+
+// usage: `go test -bench BenchmarkNBSStore`
+func BenchmarkNBSStore(b *testing.B) {
+	benchmarkKVStore(b, newNBSStore(os.TempDir()))
+}
+
 func benchmarkKVStore(b *testing.B, store keyValStore) {
 	keys := loadStore(b, store)
+	b.ResetTimer()
 
 	if makeProfile {
 		f := makePprofFile(b)
@@ -140,7 +151,8 @@ func runBenchmarkWithParams(b *testing.B, store keyValStore, keys [][]byte, p be
 	}
 
 	for _, k := range keys {
-		_, ok := store.get(k)
+		v, ok := store.get(k)
+		require.NotNil(b, v)
 		require.True(b, ok)
 	}
 }
