@@ -121,18 +121,6 @@ func (ti *timeType) NomsKind() types.NomsKind {
 	return types.IntKind
 }
 
-// ParseValue implements TypeInfo interface.
-func (ti *timeType) ParseValue(ctx context.Context, vrw types.ValueReadWriter, str *string) (types.Value, error) {
-	if str == nil || *str == "" {
-		return types.NullValue, nil
-	}
-	val, err := ti.sqlTimeType.Marshal(*str)
-	if err != nil {
-		return nil, err
-	}
-	return types.Int(val), nil
-}
-
 // Promote implements TypeInfo interface.
 func (ti *timeType) Promote() TypeInfo {
 	return &timeType{ti.sqlTimeType.Promote().(sql.TimeType)}
@@ -170,6 +158,12 @@ func timeTypeConverter(ctx context.Context, src *timeType, destTi TypeInfo) (tc 
 	case *intType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
 	case *jsonType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *linestringType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *pointType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *polygonType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
 	case *setType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)

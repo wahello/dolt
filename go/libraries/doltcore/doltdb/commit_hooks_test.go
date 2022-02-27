@@ -21,14 +21,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/buffer"
+
 	"github.com/dolthub/dolt/go/libraries/doltcore/dbfactory"
 	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"github.com/dolthub/dolt/go/libraries/utils/test"
 	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/types"
-
-	"github.com/stretchr/testify/assert"
 )
 
 const defaultBranch = "main"
@@ -70,14 +73,14 @@ func TestPushOnWriteHook(t *testing.T) {
 	}
 
 	ddb, _ := LoadDoltDB(context.Background(), types.Format_Default, LocalDirDoltDB, filesys.LocalFS)
-	err = ddb.WriteEmptyRepo(context.Background(), "master", committerName, committerEmail)
+	err = ddb.WriteEmptyRepo(context.Background(), "main", committerName, committerEmail)
 
 	if err != nil {
 		t.Fatal("Unexpected error creating empty repo", err)
 	}
 
 	// prepare a commit in the source repo
-	cs, _ := NewCommitSpec("master")
+	cs, _ := NewCommitSpec("main")
 	commit, err := ddb.Resolve(context.Background(), cs, nil)
 
 	if err != nil {
@@ -102,8 +105,8 @@ func TestPushOnWriteHook(t *testing.T) {
 	}
 
 	tSchema := createTestSchema(t)
-	rowData, _ := createTestRowData(t, ddb.db, tSchema)
-	tbl, err := CreateTestTable(ddb.db, tSchema, rowData)
+	rowData, _ := createTestRowData(t, ddb.vrw, tSchema)
+	tbl, err := CreateTestTable(ddb.vrw, tSchema, rowData)
 
 	if err != nil {
 		t.Fatal("Failed to create test table with data")
@@ -122,17 +125,21 @@ func TestPushOnWriteHook(t *testing.T) {
 
 	// setup hook
 	hook := NewPushOnWriteHook(destDB, tmpDir)
-	ddb.SetCommitHooks(ctx, []datas.CommitHook{hook})
+	ddb.SetCommitHooks(ctx, []CommitHook{hook})
 
 	t.Run("replicate to remote", func(t *testing.T) {
 		srcCommit, err := ddb.Commit(context.Background(), valHash, ref.NewBranchRef(defaultBranch), meta)
+		require.NoError(t, err)
+
 		ds, err := ddb.db.GetDataset(ctx, "refs/heads/main")
+		require.NoError(t, err)
+
 		err = hook.Execute(ctx, ds, ddb.db)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		cs, _ = NewCommitSpec(defaultBranch)
 		destCommit, err := destDB.Resolve(context.Background(), cs, nil)
-
+		require.NoError(t, err)
 		srcHash, _ := srcCommit.HashOf()
 		destHash, _ := destCommit.HashOf()
 		assert.Equal(t, srcHash, destHash)
@@ -161,5 +168,104 @@ func TestLogHook(t *testing.T) {
 		assert.NoError(t, err)
 		hook.Execute(ctx, datas.Dataset{}, nil)
 		assert.Equal(t, buffer.Bytes(), msg)
+	})
+}
+
+func TestAsyncPushOnWrite(t *testing.T) {
+	ctx := context.Background()
+
+	// destination repo
+	testDir, err := test.ChangeToTestDir("TestReplicationDest")
+
+	if err != nil {
+		panic("Couldn't change the working directory to the test directory.")
+	}
+
+	committerName := "Bill Billerson"
+	committerEmail := "bigbillieb@fake.horse"
+
+	tmpDir := filepath.Join(testDir, dbfactory.DoltDataDir)
+	err = filesys.LocalFS.MkDirs(tmpDir)
+
+	if err != nil {
+		t.Fatal("Failed to create noms directory")
+	}
+
+	destDB, _ := LoadDoltDB(context.Background(), types.Format_Default, LocalDirDoltDB, filesys.LocalFS)
+
+	// source repo
+	testDir, err = test.ChangeToTestDir("TestReplicationSource")
+
+	if err != nil {
+		panic("Couldn't change the working directory to the test directory.")
+	}
+
+	tmpDir = filepath.Join(testDir, dbfactory.DoltDataDir)
+	err = filesys.LocalFS.MkDirs(tmpDir)
+
+	if err != nil {
+		t.Fatal("Failed to create noms directory")
+	}
+
+	ddb, _ := LoadDoltDB(context.Background(), types.Format_Default, LocalDirDoltDB, filesys.LocalFS)
+	err = ddb.WriteEmptyRepo(context.Background(), "main", committerName, committerEmail)
+
+	if err != nil {
+		t.Fatal("Unexpected error creating empty repo", err)
+	}
+
+	// setup hook
+	bThreads := sql.NewBackgroundThreads()
+	hook, err := NewAsyncPushOnWriteHook(bThreads, destDB, tmpDir, &buffer.Buffer{})
+	if err != nil {
+		t.Fatal("Unexpected error creating push hook", err)
+	}
+
+	t.Run("replicate to remote", func(t *testing.T) {
+		for i := 0; i < 200; i++ {
+			cs, _ := NewCommitSpec("main")
+			commit, err := ddb.Resolve(context.Background(), cs, nil)
+
+			if err != nil {
+				t.Fatal("Couldn't find commit")
+			}
+
+			meta, err := commit.GetCommitMeta()
+			assert.NoError(t, err)
+
+			if meta.Name != committerName || meta.Email != committerEmail {
+				t.Error("Unexpected metadata")
+			}
+
+			root, err := commit.GetRootValue()
+
+			assert.NoError(t, err)
+
+			tSchema := createTestSchema(t)
+			rowData, _ := createTestRowData(t, ddb.vrw, tSchema)
+			tbl, err := CreateTestTable(ddb.vrw, tSchema, rowData)
+
+			if err != nil {
+				t.Fatal("Failed to create test table with data")
+			}
+
+			root, err = root.PutTable(context.Background(), "test", tbl)
+			assert.NoError(t, err)
+
+			valHash, err := ddb.WriteRootValue(context.Background(), root)
+			assert.NoError(t, err)
+
+			meta, err = NewCommitMeta(committerName, committerEmail, "Sample data")
+			if err != nil {
+				t.Error("Failed to create CommitMeta")
+			}
+
+			_, err = ddb.Commit(context.Background(), valHash, ref.NewBranchRef(defaultBranch), meta)
+			require.NoError(t, err)
+			ds, err := ddb.db.GetDataset(ctx, "refs/heads/main")
+			require.NoError(t, err)
+			err = hook.Execute(ctx, ds, ddb.db)
+			require.NoError(t, err)
+		}
 	})
 }

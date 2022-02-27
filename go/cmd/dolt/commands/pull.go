@@ -58,7 +58,7 @@ func (cmd PullCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, pullDocs, ap))
 }
 
-func (cmd PullCmd) createArgParser() *argparser.ArgParser {
+func (cmd PullCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.SupportsFlag(cli.SquashParam, "", "Merges changes to the working set without updating the commit history")
 	return ap
@@ -111,7 +111,7 @@ func pullHelper(ctx context.Context, dEnv *env.DoltEnv, pullSpec *env.PullSpec) 
 
 		if remoteTrackRef != nil {
 
-			srcDBCommit, err := actions.FetchRemoteBranch(ctx, dEnv.TempTableFilesDir(), pullSpec.Remote, srcDB, dEnv.DoltDB, pullSpec.Branch, remoteTrackRef, runProgFuncs, stopProgFuncs)
+			srcDBCommit, err := actions.FetchRemoteBranch(ctx, dEnv.TempTableFilesDir(), pullSpec.Remote, srcDB, dEnv.DoltDB, pullSpec.Branch, remoteTrackRef, buildProgStarter(downloadLanguage), stopProgFuncs)
 			if err != nil {
 				return err
 			}
@@ -177,7 +177,7 @@ func pullHelper(ctx context.Context, dEnv *env.DoltEnv, pullSpec *env.PullSpec) 
 	if err != nil {
 		return err
 	}
-	err = actions.FetchFollowTags(ctx, dEnv.TempTableFilesDir(), srcDB, dEnv.DoltDB, runProgFuncs, stopProgFuncs)
+	err = actions.FetchFollowTags(ctx, dEnv.TempTableFilesDir(), srcDB, dEnv.DoltDB, buildProgStarter(downloadLanguage), stopProgFuncs)
 
 	if err != nil {
 		return err

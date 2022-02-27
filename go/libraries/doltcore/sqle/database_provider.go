@@ -98,40 +98,42 @@ func (p DoltDatabaseProvider) WithDbFactoryUrl(url string) DoltDatabaseProvider 
 	return p
 }
 
-func (p DoltDatabaseProvider) Database(name string) (db sql.Database, err error) {
+func (p DoltDatabaseProvider) Database(ctx *sql.Context, name string) (db sql.Database, err error) {
 	name = strings.ToLower(name)
 	var ok bool
-	func() {
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-
-		db, ok = p.databases[name]
-	}()
+	p.mu.RLock()
+	db, ok = p.databases[name]
+	p.mu.RUnlock()
 	if ok {
 		return db, nil
 	}
 
-	db, _, ok, err = p.databaseForRevision(context.Background(), name)
+	db, _, ok, err = p.databaseForRevision(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	if ok {
-		p.mu.Lock()
-		defer p.mu.Unlock()
 
-		p.databases[name] = db
-		return db, nil
+	if !ok {
+		return nil, sql.ErrDatabaseNotFound.New(name)
 	}
 
-	return nil, sql.ErrDatabaseNotFound.New(name)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if found, ok := p.databases[name]; !ok {
+		p.databases[name] = db
+		return db, nil
+	} else {
+		return found, nil
+	}
+
 }
 
-func (p DoltDatabaseProvider) HasDatabase(name string) bool {
-	_, err := p.Database(name)
+func (p DoltDatabaseProvider) HasDatabase(ctx *sql.Context, name string) bool {
+	_, err := p.Database(ctx, name)
 	return err == nil
 }
 
-func (p DoltDatabaseProvider) AllDatabases() (all []sql.Database) {
+func (p DoltDatabaseProvider) AllDatabases(ctx *sql.Context) (all []sql.Database) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -201,6 +203,22 @@ func (p DoltDatabaseProvider) DropDatabase(ctx *sql.Context, name string) error 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Get the DB's directory
+	exists, isDir := p.fs.Exists(name)
+	if !exists {
+		// engine should already protect against this
+		return sql.ErrDatabaseNotFound.New(name)
+	} else if !isDir {
+		return fmt.Errorf("unexpected error: %s exists but is not a directory", name)
+	}
+
+	err := p.fs.Delete(name, true)
+	if err != nil {
+		return err
+	}
+
+	// TODO: delete database in current dir
+
 	delete(p.databases, strings.ToLower(name))
 	return nil
 }
@@ -214,7 +232,9 @@ func (p DoltDatabaseProvider) databaseForRevision(ctx context.Context, revDB str
 	parts := strings.SplitN(revDB, dbRevisionDelimiter, 2)
 	dbName, revSpec := parts[0], parts[1]
 
+	p.mu.RLock()
 	candidate, ok := p.databases[dbName]
+	p.mu.RUnlock()
 	if !ok {
 		return nil, dsess.InitialDbState{}, false, nil
 	}
@@ -266,7 +286,7 @@ func (p DoltDatabaseProvider) RevisionDbState(ctx context.Context, revDB string)
 	return init, nil
 }
 
-func (p DoltDatabaseProvider) Function(name string) (sql.Function, error) {
+func (p DoltDatabaseProvider) Function(ctx *sql.Context, name string) (sql.Function, error) {
 	fn, ok := p.functions[strings.ToLower(name)]
 	if !ok {
 		return nil, sql.ErrFunctionNotFound.New(name)

@@ -19,7 +19,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/parse"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -39,52 +40,12 @@ func TestAddColumnToTable(t *testing.T) {
 		newColName     string
 		colKind        types.NomsKind
 		nullable       Nullable
-		defaultVal     string
+		defaultVal     *sql.ColumnDefaultValue
 		order          *ColumnOrder
 		expectedSchema schema.Schema
 		expectedRows   []row.Row
 		expectedErr    string
 	}{
-		{
-			name:       "string column no default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.StringKind,
-			nullable:   Null,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schema.NewColumn("newCol", dtestutils.NextTag, types.StringKind, false)),
-			expectedRows: dtestutils.TypedRows,
-		},
-		{
-			name:       "int column no default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.IntKind,
-			nullable:   Null,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schema.NewColumn("newCol", dtestutils.NextTag, types.IntKind, false)),
-			expectedRows: dtestutils.TypedRows,
-		},
-		{
-			name:       "uint column no default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.UintKind,
-			nullable:   Null,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schema.NewColumn("newCol", dtestutils.NextTag, types.UintKind, false)),
-			expectedRows: dtestutils.TypedRows,
-		},
-		{
-			name:       "float column no default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.FloatKind,
-			nullable:   Null,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schema.NewColumn("newCol", dtestutils.NextTag, types.FloatKind, false)),
-			expectedRows: dtestutils.TypedRows,
-		},
 		{
 			name:       "bool column no default",
 			tag:        dtestutils.NextTag,
@@ -96,89 +57,11 @@ func TestAddColumnToTable(t *testing.T) {
 			expectedRows: dtestutils.TypedRows,
 		},
 		{
-			name:       "uuid column no default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.UUIDKind,
-			nullable:   Null,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schema.NewColumn("newCol", dtestutils.NextTag, types.UUIDKind, false)),
-			expectedRows: dtestutils.TypedRows,
-		},
-		{
-			name:       "string column with default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.StringKind,
-			nullable:   NotNull,
-			defaultVal: `("default")`,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schemaNewColumn("newCol", dtestutils.NextTag, types.StringKind, false, `("default")`, schema.NotNullConstraint{})),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.String("default")),
-		},
-		{
-			name:       "int column with default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.IntKind,
-			nullable:   NotNull,
-			defaultVal: "42",
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schemaNewColumn("newCol", dtestutils.NextTag, types.IntKind, false, "42", schema.NotNullConstraint{})),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Int(42)),
-		},
-		{
-			name:       "uint column with default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.UintKind,
-			nullable:   NotNull,
-			defaultVal: "64",
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schemaNewColumn("newCol", dtestutils.NextTag, types.UintKind, false, "64", schema.NotNullConstraint{})),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Uint(64)),
-		},
-		{
-			name:       "float column with default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.FloatKind,
-			nullable:   NotNull,
-			defaultVal: "33.33",
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schemaNewColumn("newCol", dtestutils.NextTag, types.FloatKind, false, "33.33", schema.NotNullConstraint{})),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Float(33.33)),
-		},
-		{
-			name:       "bool column with default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.BoolKind,
-			nullable:   NotNull,
-			defaultVal: "true",
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schemaNewColumn("newCol", dtestutils.NextTag, types.BoolKind, false, "true", schema.NotNullConstraint{})),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Bool(true)),
-		},
-		{
-			name:       "uuid column with default",
-			tag:        dtestutils.NextTag,
-			newColName: "newCol",
-			colKind:    types.UUIDKind,
-			nullable:   NotNull,
-			defaultVal: `"00000000-0000-0000-0000-000000000000"`,
-			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
-				schemaNewColumn("newCol", dtestutils.NextTag, types.UUIDKind, false, `"00000000-0000-0000-0000-000000000000"`, schema.NotNullConstraint{})),
-			expectedRows: dtestutils.AddColToRows(t,
-				dtestutils.TypedRows, dtestutils.NextTag, types.UUID(uuid.MustParse("00000000-0000-0000-0000-000000000000"))),
-		},
-		{
 			name:       "nullable with nil default",
 			tag:        dtestutils.NextTag,
 			newColName: "newCol",
 			colKind:    types.IntKind,
 			nullable:   Null,
-			defaultVal: "",
 			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
 				schemaNewColumn("newCol", dtestutils.NextTag, types.IntKind, false, "")),
 			expectedRows: dtestutils.TypedRows,
@@ -189,10 +72,10 @@ func TestAddColumnToTable(t *testing.T) {
 			newColName: "newCol",
 			colKind:    types.IntKind,
 			nullable:   Null,
-			defaultVal: "42",
+			defaultVal: mustStringToColumnDefault("42"),
 			expectedSchema: dtestutils.AddColumnToSchema(dtestutils.TypedSchema,
 				schemaNewColumn("newCol", dtestutils.NextTag, types.IntKind, false, "42")),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Int(42)),
+			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.NullValue),
 		},
 		{
 			name:       "first order",
@@ -200,7 +83,7 @@ func TestAddColumnToTable(t *testing.T) {
 			newColName: "newCol",
 			colKind:    types.IntKind,
 			nullable:   Null,
-			defaultVal: "42",
+			defaultVal: mustStringToColumnDefault("42"),
 			order:      &ColumnOrder{First: true},
 			expectedSchema: dtestutils.CreateSchema(
 				schemaNewColumn("newCol", dtestutils.NextTag, types.IntKind, false, "42"),
@@ -210,7 +93,7 @@ func TestAddColumnToTable(t *testing.T) {
 				schema.NewColumn("is_married", dtestutils.IsMarriedTag, types.BoolKind, false, schema.NotNullConstraint{}),
 				schema.NewColumn("title", dtestutils.TitleTag, types.StringKind, false),
 			),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Int(42)),
+			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.NullValue),
 		},
 		{
 			name:       "middle order",
@@ -218,7 +101,7 @@ func TestAddColumnToTable(t *testing.T) {
 			newColName: "newCol",
 			colKind:    types.IntKind,
 			nullable:   Null,
-			defaultVal: "42",
+			defaultVal: mustStringToColumnDefault("42"),
 			order:      &ColumnOrder{After: "age"},
 			expectedSchema: dtestutils.CreateSchema(
 				schema.NewColumn("id", dtestutils.IdTag, types.UUIDKind, true, schema.NotNullConstraint{}),
@@ -228,7 +111,7 @@ func TestAddColumnToTable(t *testing.T) {
 				schema.NewColumn("is_married", dtestutils.IsMarriedTag, types.BoolKind, false, schema.NotNullConstraint{}),
 				schema.NewColumn("title", dtestutils.TitleTag, types.StringKind, false),
 			),
-			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.Int(42)),
+			expectedRows: dtestutils.AddColToRows(t, dtestutils.TypedRows, dtestutils.NextTag, types.NullValue),
 		},
 		{
 			name:        "tag collision",
@@ -236,7 +119,6 @@ func TestAddColumnToTable(t *testing.T) {
 			newColName:  "newCol",
 			colKind:     types.IntKind,
 			nullable:    NotNull,
-			defaultVal:  "",
 			expectedErr: fmt.Sprintf("Cannot create column newCol, the tag %d was already used in table people", dtestutils.AgeTag),
 		},
 		{
@@ -245,7 +127,7 @@ func TestAddColumnToTable(t *testing.T) {
 			newColName:  "age",
 			colKind:     types.IntKind,
 			nullable:    NotNull,
-			defaultVal:  "10",
+			defaultVal:  mustStringToColumnDefault("10"),
 			expectedErr: "A column with the name age already exists",
 		},
 	}
@@ -275,9 +157,10 @@ func TestAddColumnToTable(t *testing.T) {
 			index := sch.Indexes().GetByName(dtestutils.IndexName)
 			assert.NotNil(t, index)
 			tt.expectedSchema.Indexes().AddIndex(index)
+			tt.expectedSchema.Checks().AddCheck("test-check", "age < 123", true)
 			require.Equal(t, tt.expectedSchema, sch)
 
-			rowData, err := updatedTable.GetRowData(ctx)
+			rowData, err := updatedTable.GetNomsRowData(ctx)
 			require.NoError(t, err)
 
 			var foundRows []row.Row
@@ -295,11 +178,19 @@ func TestAddColumnToTable(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedRows, foundRows)
 
-			indexRowData, err := updatedTable.GetIndexRowData(ctx, dtestutils.IndexName)
+			indexRowData, err := updatedTable.GetNomsIndexRowData(ctx, dtestutils.IndexName)
 			require.NoError(t, err)
 			assert.Greater(t, indexRowData.Len(), uint64(0))
 		})
 	}
+}
+
+func mustStringToColumnDefault(defaultString string) *sql.ColumnDefaultValue {
+	def, err := parse.StringToColumnDefaultValue(sql.NewEmptyContext(), defaultString)
+	if err != nil {
+		panic(err)
+	}
+	return def
 }
 
 func schemaNewColumn(name string, tag uint64, kind types.NomsKind, partOfPK bool, defaultVal string, constraints ...schema.ColConstraint) schema.Column {

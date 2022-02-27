@@ -35,6 +35,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/remotestorage"
 	"github.com/dolthub/dolt/go/libraries/utils/argparser"
 	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/datas/pull"
 )
 
 var pushDocs = cli.CommandDocumentationContent{
@@ -67,11 +68,11 @@ func (cmd PushCmd) Description() string {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd PushCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, pushDocs, ap))
 }
 
-func (cmd PushCmd) createArgParser() *argparser.ArgParser {
+func (cmd PushCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.SupportsFlag(cli.SetUpstreamFlag, "u", "For every branch that is up to date or successfully pushed, add upstream (tracking) reference, used by argument-less {{.EmphasisLeft}}dolt pull{{.EmphasisRight}} and other commands.")
 	ap.SupportsFlag(cli.ForceFlag, "f", "Update the remote with local history, overwriting any conflicting history in the remote.")
@@ -85,7 +86,7 @@ func (cmd PushCmd) EventType() eventsapi.ClientEventType {
 
 // Exec executes the command
 func (cmd PushCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, pushDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -111,7 +112,7 @@ func (cmd PushCmd) Exec(ctx context.Context, commandStr string, args []string, d
 	}
 
 	var verr errhand.VerboseError
-	err = actions.DoPush(ctx, dEnv.RepoStateReader(), dEnv.RepoStateWriter(), dEnv.DoltDB, dEnv.TempTableFilesDir(), opts, runProgFuncs, stopProgFuncs)
+	err = actions.DoPush(ctx, dEnv.RepoStateReader(), dEnv.RepoStateWriter(), dEnv.DoltDB, dEnv.TempTableFilesDir(), opts, buildProgStarter(defaultLanguage), stopProgFuncs)
 	if err != nil {
 		verr = printInfoForPushError(err, opts.Remote, opts.DestRef, opts.RemoteRef)
 	}
@@ -174,12 +175,12 @@ func (ts *TextSpinner) next() string {
 	return string([]rune{spinnerSeq[ts.seqPos]})
 }
 
-func pullerProgFunc(ctx context.Context, pullerEventCh chan datas.PullerEvent) {
+func pullerProgFunc(ctx context.Context, pullerEventCh chan pull.PullerEvent, language progLanguage) {
 	var pos int
 	var currentTreeLevel int
 	var percentBuffered float64
-	var tableFilesBuffered int
-	var filesUploaded int
+	var tableFilesClosed int
+	var filesTransfered int
 	var ts TextSpinner
 
 	uploadRate := ""
@@ -189,17 +190,17 @@ func pullerProgFunc(ctx context.Context, pullerEventCh chan datas.PullerEvent) {
 			return
 		}
 		switch evt.EventType {
-		case datas.NewLevelTWEvent:
+		case pull.NewLevelTWEvent:
 			if evt.TWEventDetails.TreeLevel != 1 {
 				currentTreeLevel = evt.TWEventDetails.TreeLevel
 				percentBuffered = 0
 			}
-		case datas.DestDBHasTWEvent:
+		case pull.DestDBHasTWEvent:
 			if evt.TWEventDetails.TreeLevel != -1 {
 				currentTreeLevel = evt.TWEventDetails.TreeLevel
 			}
 
-		case datas.LevelUpdateTWEvent:
+		case pull.LevelUpdateTWEvent:
 			if evt.TWEventDetails.TreeLevel != -1 {
 				currentTreeLevel = evt.TWEventDetails.TreeLevel
 				toBuffer := evt.TWEventDetails.ChunksInLevel - evt.TWEventDetails.ChunksAlreadyHad
@@ -209,19 +210,19 @@ func pullerProgFunc(ctx context.Context, pullerEventCh chan datas.PullerEvent) {
 				}
 			}
 
-		case datas.LevelDoneTWEvent:
+		case pull.LevelDoneTWEvent:
 
-		case datas.TableFileClosedEvent:
-			tableFilesBuffered += 1
+		case pull.TableFileClosedEvent:
+			tableFilesClosed += 1
 
-		case datas.StartUploadTableFileEvent:
+		case pull.StartUploadTableFileEvent:
 
-		case datas.UploadTableFileUpdateEvent:
+		case pull.UploadTableFileUpdateEvent:
 			bps := float64(evt.TFEventDetails.Stats.Read) / evt.TFEventDetails.Stats.Elapsed.Seconds()
 			uploadRate = humanize.Bytes(uint64(bps)) + "/s"
 
-		case datas.EndUploadTableFileEvent:
-			filesUploaded += 1
+		case pull.EndUploadTableFileEvent:
+			filesTransfered += 1
 		}
 
 		if currentTreeLevel == -1 {
@@ -229,18 +230,24 @@ func pullerProgFunc(ctx context.Context, pullerEventCh chan datas.PullerEvent) {
 		}
 
 		var msg string
-		if len(uploadRate) > 0 {
-			msg = fmt.Sprintf("%s Tree Level: %d, Percent Buffered: %.2f%%, Files Written: %d, Files Uploaded: %d, Current Upload Speed: %s", ts.next(), currentTreeLevel, percentBuffered, tableFilesBuffered, filesUploaded, uploadRate)
+		msg = fmt.Sprintf("%s Tree Level: %d, Percent Buffered: %.2f%%,", ts.next(), currentTreeLevel, percentBuffered)
+
+		if language == downloadLanguage {
+			msg = fmt.Sprintf("%s Files Written: %d", msg, filesTransfered)
 		} else {
-			msg = fmt.Sprintf("%s Tree Level: %d, Percent Buffered: %.2f%% Files Written: %d, Files Uploaded: %d", ts.next(), currentTreeLevel, percentBuffered, tableFilesBuffered, filesUploaded)
+			if len(uploadRate) > 0 {
+				msg = fmt.Sprintf("%s Files Created: %d, Files Uploaded: %d, Current Upload Speed: %s", msg, tableFilesClosed, filesTransfered, uploadRate)
+			} else {
+				msg = fmt.Sprintf("%s Files Created: %d, Files Uploaded: %d", msg, tableFilesClosed, filesTransfered)
+			}
 		}
 
 		pos = cli.DeleteAndPrint(pos, msg)
 	}
 }
 
-func progFunc(ctx context.Context, progChan chan datas.PullProgress) {
-	var latest datas.PullProgress
+func progFunc(ctx context.Context, progChan chan pull.PullProgress) {
+	var latest pull.PullProgress
 	last := time.Now().UnixNano() - 1
 	lenPrinted := 0
 	done := false
@@ -277,32 +284,41 @@ func progFunc(ctx context.Context, progChan chan datas.PullProgress) {
 	}
 }
 
-func runProgFuncs(ctx context.Context) (*sync.WaitGroup, chan datas.PullProgress, chan datas.PullerEvent) {
-	pullerEventCh := make(chan datas.PullerEvent, 128)
-	progChan := make(chan datas.PullProgress, 128)
-	wg := &sync.WaitGroup{}
+// progLanguage is the language to use when displaying progress for a pull from a src db to a sink db.
+type progLanguage int
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		progFunc(ctx, progChan)
-	}()
+const (
+	defaultLanguage progLanguage = iota
+	downloadLanguage
+)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		pullerProgFunc(ctx, pullerEventCh)
-	}()
+func buildProgStarter(language progLanguage) actions.ProgStarter {
+	return func(ctx context.Context) (*sync.WaitGroup, chan pull.PullProgress, chan pull.PullerEvent) {
+		pullerEventCh := make(chan pull.PullerEvent, 128)
+		progChan := make(chan pull.PullProgress, 128)
+		wg := &sync.WaitGroup{}
 
-	return wg, progChan, pullerEventCh
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			progFunc(ctx, progChan)
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pullerProgFunc(ctx, pullerEventCh, language)
+		}()
+
+		return wg, progChan, pullerEventCh
+	}
 }
 
-func stopProgFuncs(cancel context.CancelFunc, wg *sync.WaitGroup, progChan chan datas.PullProgress, pullerEventCh chan datas.PullerEvent) {
+func stopProgFuncs(cancel context.CancelFunc, wg *sync.WaitGroup, progChan chan pull.PullProgress, pullerEventCh chan pull.PullerEvent) {
 	cancel()
 	close(progChan)
 	close(pullerEventCh)
 	wg.Wait()
-
 }
 
 func bytesPerSec(bytes uint64, start time.Time) string {

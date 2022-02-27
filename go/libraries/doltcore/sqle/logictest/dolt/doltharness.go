@@ -27,7 +27,6 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/sqllogictest/go/logictest"
 	"github.com/dolthub/vitess/go/vt/proto/query"
-	"github.com/dolthub/vitess/go/vt/sqlparser"
 	"github.com/shopspring/decimal"
 
 	"github.com/dolthub/dolt/go/cmd/dolt/commands"
@@ -68,8 +67,6 @@ func (h *DoltHarness) ExecuteStatement(statement string) error {
 		sql.WithPid(rand.Uint64()),
 		sql.WithSession(h.sess))
 
-	statement = normalizeStatement(statement)
-
 	_, rowIter, err := h.engine.Query(ctx, statement)
 	if err != nil {
 		return err
@@ -105,7 +102,7 @@ func (h *DoltHarness) ExecuteQuery(statement string) (schema string, results []s
 		return "", nil, err
 	}
 
-	results, err = rowsToResultStrings(rowIter)
+	results, err = rowsToResultStrings(ctx, rowIter)
 	if err != nil {
 		return "", nil, err
 	}
@@ -136,7 +133,7 @@ func innerInit(h *DoltHarness, dEnv *env.DoltEnv) error {
 	ctx := dsql.NewTestSQLCtx(context.Background())
 	h.sess = ctx.Session.(*dsess.DoltSession)
 
-	dbs := h.engine.Analyzer.Catalog.AllDatabases()
+	dbs := h.engine.Analyzer.Catalog.AllDatabases(ctx)
 	dsqlDBs := make([]dsql.Database, len(dbs))
 	for i, db := range dbs {
 		dsqlDB := db.(dsql.Database)
@@ -189,44 +186,13 @@ func getDbState(db sql.Database, dEnv *env.DoltEnv) dsess.InitialDbState {
 	}
 }
 
-// We cheat a little at these tests. A great many of them use tables without primary keys, which we don't currently
-// support. Until we do, we just make every column in such tables part of the primary key.
-func normalizeStatement(statement string) string {
-	if !strings.Contains(statement, "CREATE TABLE") {
-		return statement
-	}
-	if strings.Contains(statement, "PRIMARY KEY") {
-		return statement
-	}
-
-	stmt, err := sqlparser.Parse(statement)
-	if err != nil {
-		panic(err)
-	}
-	create, ok := stmt.(*sqlparser.DDL)
-	if !ok {
-		panic("Expected CREATE TABLE statement")
-	}
-
-	lastParen := strings.LastIndex(statement, ")")
-	normalized := statement[:lastParen] + ", PRIMARY KEY ("
-	for i, column := range create.TableSpec.Columns {
-		normalized += column.Name.String()
-		if i != len(create.TableSpec.Columns)-1 {
-			normalized += ", "
-		}
-	}
-	normalized += "))"
-	return normalized
-}
-
 func drainIterator(ctx *sql.Context, iter sql.RowIter) error {
 	if iter == nil {
 		return nil
 	}
 
 	for {
-		_, err := iter.Next()
+		_, err := iter.Next(ctx)
 		if err == io.EOF {
 			break
 		} else if err != nil {
@@ -239,13 +205,13 @@ func drainIterator(ctx *sql.Context, iter sql.RowIter) error {
 
 // This shouldn't be necessary -- the fact that an iterator can return an error but not clean up after itself in all
 // cases is a bug.
-func drainIteratorIgnoreErrors(iter sql.RowIter) {
+func drainIteratorIgnoreErrors(ctx *sql.Context, iter sql.RowIter) {
 	if iter == nil {
 		return
 	}
 
 	for {
-		_, err := iter.Next()
+		_, err := iter.Next(ctx)
 		if err == io.EOF {
 			return
 		}
@@ -253,18 +219,18 @@ func drainIteratorIgnoreErrors(iter sql.RowIter) {
 }
 
 // Returns the rows in the iterator given as an array of their string representations, as expected by the test files
-func rowsToResultStrings(iter sql.RowIter) ([]string, error) {
+func rowsToResultStrings(ctx *sql.Context, iter sql.RowIter) ([]string, error) {
 	var results []string
 	if iter == nil {
 		return results, nil
 	}
 
 	for {
-		row, err := iter.Next()
+		row, err := iter.Next(ctx)
 		if err == io.EOF {
 			return results, nil
 		} else if err != nil {
-			drainIteratorIgnoreErrors(iter)
+			drainIteratorIgnoreErrors(ctx, iter)
 			return nil, err
 		} else {
 			for _, col := range row {
@@ -342,7 +308,14 @@ func schemaToSchemaString(sch sql.Schema) (string, error) {
 func sqlNewEngine(dEnv *env.DoltEnv) (*sqle.Engine, error) {
 	opts := editor.Options{Deaf: dEnv.DbEaFactory()}
 	db := dsql.NewDatabase("dolt", dEnv.DbData(), opts)
-	pro := dsql.NewDoltDatabaseProvider(dEnv.Config, dEnv.FS, db)
+	mrEnv, err := env.DoltEnvAsMultiEnv(context.Background(), dEnv)
+	if err != nil {
+		return nil, err
+	}
+
+	pro := dsql.NewDoltDatabaseProvider(dEnv.Config, mrEnv.FileSystem(), db)
+	pro = pro.WithDbFactoryUrl(doltdb.InMemDoltDB)
+
 	engine := sqle.NewDefault(pro)
 
 	return engine, nil

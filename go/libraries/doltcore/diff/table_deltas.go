@@ -30,15 +30,16 @@ import (
 // FromFKs and ToFKs contain Foreign Keys that constrain columns in this table,
 // they do not contain Foreign Keys that reference this table.
 type TableDelta struct {
-	FromName       string
-	ToName         string
-	FromTable      *doltdb.Table
-	ToTable        *doltdb.Table
-	FromSch        schema.Schema
-	ToSch          schema.Schema
-	FromFks        []doltdb.ForeignKey
-	ToFks          []doltdb.ForeignKey
-	ToFksParentSch map[string]schema.Schema
+	FromName         string
+	ToName           string
+	FromTable        *doltdb.Table
+	ToTable          *doltdb.Table
+	FromSch          schema.Schema
+	ToSch            schema.Schema
+	FromFks          []doltdb.ForeignKey
+	ToFks            []doltdb.ForeignKey
+	ToFksParentSch   map[string]schema.Schema
+	FromFksParentSch map[string]schema.Schema
 }
 
 // GetStagedUnstagedTableDeltas represents staged and unstaged changes as TableDelta slices.
@@ -66,12 +67,17 @@ func GetTableDeltas(ctx context.Context, fromRoot, toRoot *doltdb.RootValue) (de
 			return true, err
 		}
 		fks, _ := c.KeysForTable(name)
+		parentSchs, err := getFkParentSchs(ctx, fromRoot, fks...)
+		if err != nil {
+			return false, err
+		}
 
 		fromDeltas = append(fromDeltas, TableDelta{
-			FromName:  name,
-			FromTable: tbl,
-			FromSch:   sch,
-			FromFks:   fks,
+			FromName:         name,
+			FromTable:        tbl,
+			FromSch:          sch,
+			FromFks:          fks,
+			FromFksParentSch: parentSchs,
 		})
 		return
 	})
@@ -140,15 +146,16 @@ func matchTableDeltas(fromDeltas, toDeltas []TableDelta) (deltas []TableDelta, e
 
 	match := func(t, f TableDelta) TableDelta {
 		return TableDelta{
-			FromName:       f.FromName,
-			ToName:         t.ToName,
-			FromTable:      f.FromTable,
-			ToTable:        t.ToTable,
-			FromSch:        f.FromSch,
-			ToSch:          t.ToSch,
-			FromFks:        f.FromFks,
-			ToFks:          t.ToFks,
-			ToFksParentSch: t.ToFksParentSch,
+			FromName:         f.FromName,
+			ToName:           t.ToName,
+			FromTable:        f.FromTable,
+			ToTable:          t.ToTable,
+			FromSch:          f.FromSch,
+			ToSch:            t.ToSch,
+			FromFks:          f.FromFks,
+			ToFks:            t.ToFks,
+			FromFksParentSch: f.FromFksParentSch,
+			ToFksParentSch:   t.ToFksParentSch,
 		}
 	}
 
@@ -296,7 +303,7 @@ func (td TableDelta) IsKeyless(ctx context.Context) (bool, error) {
 // GetMaps returns the table's row map at the fromRoot and toRoot, or and empty map if the table did not exist.
 func (td TableDelta) GetMaps(ctx context.Context) (from, to types.Map, err error) {
 	if td.FromTable != nil {
-		from, err = td.FromTable.GetRowData(ctx)
+		from, err = td.FromTable.GetNomsRowData(ctx)
 		if err != nil {
 			return from, to, err
 		}
@@ -305,7 +312,7 @@ func (td TableDelta) GetMaps(ctx context.Context) (from, to types.Map, err error
 	}
 
 	if td.ToTable != nil {
-		to, err = td.ToTable.GetRowData(ctx)
+		to, err = td.ToTable.GetNomsRowData(ctx)
 		if err != nil {
 			return from, to, err
 		}

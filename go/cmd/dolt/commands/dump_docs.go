@@ -27,14 +27,19 @@ import (
 )
 
 const (
-	fileParamName = "file"
+	fileParamName  = "file"
+	cliMdDocHeader = "" +
+		"---\n" +
+		"title: CLI\n" +
+		"---\n\n" +
+		"# CLI\n\n"
 )
 
 type DumpDocsCmd struct {
 	DoltCommand cli.SubCommandHandler
 }
 
-// Name is returns the name of the Dolt cli command. This is what is used on the command line to invoke the command
+// Name returns the name of the Dolt cli command. This is what is used on the command line to invoke the command
 func (cmd *DumpDocsCmd) Name() string {
 	return "dump-docs"
 }
@@ -60,10 +65,16 @@ func (cmd *DumpDocsCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
 	return nil
 }
 
-// Exec executes the command
-func (cmd *DumpDocsCmd) Exec(_ context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
+func (cmd *DumpDocsCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.SupportsString(fileParamName, "", "file", "The file to write CLI docs to")
+	return ap
+}
+
+// Exec executes the command
+func (cmd *DumpDocsCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
+	ap := cmd.ArgParser()
+
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, cli.CommandDocumentationContent{}, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -77,6 +88,12 @@ func (cmd *DumpDocsCmd) Exec(_ context.Context, commandStr string, args []string
 	}
 
 	wr, err := dEnv.FS.OpenForWrite(fileStr, os.ModePerm)
+	if err != nil {
+		cli.PrintErrln(err.Error())
+		return 1
+	}
+
+	_, err = wr.Write([]byte(cliMdDocHeader))
 	if err != nil {
 		cli.PrintErrln(err.Error())
 		return 1

@@ -136,7 +136,7 @@ func newKeylessTableEditor(ctx context.Context, tbl *doltdb.Table, sch schema.Sc
 	}
 
 	for i, index := range sch.Indexes().AllIndexes() {
-		indexData, err := tbl.GetIndexRowData(ctx, index.Name())
+		indexData, err := tbl.GetNomsIndexRowData(ctx, index.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +246,7 @@ func (kte *keylessTableEditor) UpdateRow(ctx context.Context, old row.Row, new r
 	return kte.acc.increment(key, val)
 }
 
-func (kte *keylessTableEditor) hasEdits() bool {
+func (kte *keylessTableEditor) HasEdits() bool {
 	return kte.dirty
 }
 
@@ -368,7 +368,7 @@ func (kte *keylessTableEditor) flush(ctx context.Context) error {
 }
 
 func applyEdits(ctx context.Context, tbl *doltdb.Table, acc keylessEditAcc, indexEds []*IndexEditor, errFunc PKDuplicateErrFunc) (_ *doltdb.Table, retErr error) {
-	rowData, err := tbl.GetRowData(ctx)
+	rowData, err := tbl.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +472,7 @@ func applyEdits(ctx context.Context, tbl *doltdb.Table, acc keylessEditAcc, inde
 		if idxErr != nil {
 			return nil, err
 		}
-		tbl, idxErr = tbl.SetIndexRowData(ctx, indexEds[i].Index().Name(), indexMap)
+		tbl, idxErr = tbl.SetNomsIndexRows(ctx, indexEds[i].Index().Name(), indexMap)
 		if idxErr != nil {
 			return nil, err
 		}
@@ -483,7 +483,7 @@ func applyEdits(ctx context.Context, tbl *doltdb.Table, acc keylessEditAcc, inde
 		return nil, err
 	}
 
-	return tbl.UpdateRows(ctx, rowData)
+	return tbl.UpdateNomsRows(ctx, rowData)
 }
 
 // for deletes (cardinality < 1): |ok| is set false

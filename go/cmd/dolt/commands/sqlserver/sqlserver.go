@@ -46,6 +46,7 @@ const (
 	queryParallelismFlag    = "query-parallelism"
 	maxConnectionsFlag      = "max-connections"
 	persistenceBehaviorFlag = "persistence-behavior"
+	privilegeFilePathFlag   = "privilege-file"
 )
 
 func indentLines(s string) string {
@@ -122,11 +123,11 @@ func (cmd SqlServerCmd) Description() string {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd SqlServerCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.CreateArgParser()
+	ap := cmd.ArgParser()
 	return commands.CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, sqlServerDocs, ap))
 }
 
-func (cmd SqlServerCmd) CreateArgParser() *argparser.ArgParser {
+func (cmd SqlServerCmd) ArgParser() *argparser.ArgParser {
 	serverConfig := DefaultServerConfig()
 
 	ap := argparser.NewArgParser()
@@ -143,7 +144,7 @@ func (cmd SqlServerCmd) CreateArgParser() *argparser.ArgParser {
 	ap.SupportsInt(queryParallelismFlag, "", "num-go-routines", fmt.Sprintf("Set the number of go routines spawned to handle each query (default `%d`)", serverConfig.QueryParallelism()))
 	ap.SupportsInt(maxConnectionsFlag, "", "max-connections", fmt.Sprintf("Set the number of connections handled by the server (default `%d`)", serverConfig.MaxConnections()))
 	ap.SupportsInt(persistenceBehaviorFlag, "", "persistence-behavior", fmt.Sprintf("Indicate whether to `load` or `ignore` persisted global variables (default `%s`)", serverConfig.PersistenceBehavior()))
-
+	ap.SupportsString(privilegeFilePathFlag, "", "Privilege File", "Points to the file that privileges will be loaded from, in addition to being overwritten when privileges have been modified.")
 	return ap
 }
 
@@ -173,7 +174,7 @@ func (cmd SqlServerCmd) Exec(ctx context.Context, commandStr string, args []stri
 }
 
 func startServer(ctx context.Context, versionStr, commandStr string, args []string, dEnv *env.DoltEnv, serverController *ServerController) int {
-	ap := SqlServerCmd{}.CreateArgParser()
+	ap := SqlServerCmd{}.ArgParser()
 	help, _ := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, sqlServerDocs, ap))
 
 	// We need a username and password for many SQL commands, so set defaults if they don't exist
@@ -252,7 +253,9 @@ func getCommandLineServerConfig(dEnv *env.DoltEnv, apr *argparser.ArgParseResult
 			return nil, errors.New("failed to read databases in path specified by --multi-db-dir. error: " + err.Error())
 		}
 
-		serverConfig.withDBNamesAndPaths(dbNamesAndPaths)
+		// We set datadir to multi-db-dir here too
+		// TODO: rename multi-db-dir to data_dir
+		serverConfig.withDBNamesAndPaths(dbNamesAndPaths).withDataDir(multiDBDir)
 	}
 
 	if queryParallelism, ok := apr.GetInt(queryParallelismFlag); ok {
@@ -266,6 +269,10 @@ func getCommandLineServerConfig(dEnv *env.DoltEnv, apr *argparser.ArgParseResult
 	serverConfig.autoCommit = !apr.Contains(noAutoCommitFlag)
 	if persistenceBehavior, ok := apr.GetValue(persistenceBehaviorFlag); ok {
 		serverConfig.withPersistenceBehavior(persistenceBehavior)
+	}
+
+	if privilegeFilePath, ok := apr.GetValue(privilegeFilePathFlag); ok {
+		serverConfig.withPrivilegeFilePath(privilegeFilePath)
 	}
 
 	return serverConfig, nil

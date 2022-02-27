@@ -20,16 +20,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
-	"github.com/dolthub/dolt/go/cmd/dolt/cli"
+	"github.com/dustin/go-humanize"
+	"github.com/gosuri/uilive"
+
 	"github.com/dolthub/dolt/go/libraries/doltcore/dbfactory"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
+	"github.com/dolthub/dolt/go/libraries/utils/iohelp"
 	"github.com/dolthub/dolt/go/libraries/utils/strhelp"
-	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/datas/pull"
+	"github.com/dolthub/dolt/go/store/nbs"
 	"github.com/dolthub/dolt/go/store/types"
 )
 
@@ -88,43 +93,76 @@ func EnvForClone(ctx context.Context, nbf *types.NomsBinFormat, r env.Remote, di
 	return dEnv, nil
 }
 
-func cloneProg(eventCh <-chan datas.TableFileEvent) {
+func cloneProg(eventCh <-chan pull.TableFileEvent) {
 	var (
 		chunks            int64
 		chunksDownloading int64
 		chunksDownloaded  int64
-		cliPos            int
+		currStats         = make(map[string]iohelp.ReadStats)
+		tableFiles        = make(map[string]*nbs.TableFile)
 	)
 
-	cliPos = cli.DeleteAndPrint(cliPos, "Retrieving remote information.")
+	writer := uilive.New()
+	writer.Start()
+	fmt.Fprintf(writer, "Retrieving remote information.\n")
+	writer.Stop()
+
 	for tblFEvt := range eventCh {
 		switch tblFEvt.EventType {
-		case datas.Listed:
+		case pull.Listed:
 			for _, tf := range tblFEvt.TableFiles {
+				c := tf
+				tableFiles[c.FileID()] = &c
 				chunks += int64(tf.NumChunks())
 			}
-		case datas.DownloadStart:
+		case pull.DownloadStart:
 			for _, tf := range tblFEvt.TableFiles {
 				chunksDownloading += int64(tf.NumChunks())
 			}
-		case datas.DownloadSuccess:
+		case pull.DownloadStats:
+			for i, s := range tblFEvt.Stats {
+				tf := tblFEvt.TableFiles[i]
+				currStats[tf.FileID()] = s
+			}
+		case pull.DownloadSuccess:
 			for _, tf := range tblFEvt.TableFiles {
 				chunksDownloading -= int64(tf.NumChunks())
 				chunksDownloaded += int64(tf.NumChunks())
+				delete(currStats, tf.FileID())
 			}
-		case datas.DownloadFailed:
+		case pull.DownloadFailed:
 			// Ignore for now and output errors on the main thread
+			for _, tf := range tblFEvt.TableFiles {
+				delete(currStats, tf.FileID())
+			}
 		}
 
-		str := fmt.Sprintf("%s of %s chunks complete. %s chunks being downloaded currently.", strhelp.CommaIfy(chunksDownloaded), strhelp.CommaIfy(chunks), strhelp.CommaIfy(chunksDownloading))
-		cliPos = cli.DeleteAndPrint(cliPos, str)
+		// Starting and stopping for each event seems to be less jumpy
+		writer.Start()
+		fmt.Fprintf(writer, "%s of %s chunks complete. %s chunks being downloaded currently.\n",
+			strhelp.CommaIfy(chunksDownloaded), strhelp.CommaIfy(chunks), strhelp.CommaIfy(chunksDownloading))
+		for _, fileId := range sortedKeys(currStats) {
+			s := currStats[fileId]
+			bps := float64(s.Read) / s.Elapsed.Seconds()
+			rate := humanize.Bytes(uint64(bps)) + "/s"
+			fmt.Fprintf(writer.Newline(), "Downloading file: %s (%s chunks) - %.2f%% downloaded, %s, \n",
+				fileId, strhelp.CommaIfy(int64((*tableFiles[fileId]).NumChunks())), s.Percent*100, rate)
+		}
+		writer.Stop()
 	}
+}
 
-	cli.Println()
+func sortedKeys(m map[string]iohelp.ReadStats) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func CloneRemote(ctx context.Context, srcDB *doltdb.DoltDB, remoteName, branch string, dEnv *env.DoltEnv) error {
-	eventCh := make(chan datas.TableFileEvent, 128)
+	eventCh := make(chan pull.TableFileEvent, 128)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -139,7 +177,7 @@ func CloneRemote(ctx context.Context, srcDB *doltdb.DoltDB, remoteName, branch s
 	wg.Wait()
 
 	if err != nil {
-		if err == datas.ErrNoData {
+		if err == pull.ErrNoData {
 			err = ErrNoDataAtRemote
 		}
 		return fmt.Errorf("%w; %s", ErrCloneFailed, err.Error())

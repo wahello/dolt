@@ -31,6 +31,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/globalstate"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
+	"github.com/dolthub/dolt/go/store/types"
 )
 
 const (
@@ -50,6 +51,7 @@ type DoltHarness struct {
 
 var _ enginetest.Harness = (*DoltHarness)(nil)
 var _ enginetest.SkippingHarness = (*DoltHarness)(nil)
+var _ enginetest.ClientHarness = (*DoltHarness)(nil)
 var _ enginetest.IndexHarness = (*DoltHarness)(nil)
 var _ enginetest.VersionedDBHarness = (*DoltHarness)(nil)
 var _ enginetest.ForeignKeyHarness = (*DoltHarness)(nil)
@@ -58,27 +60,47 @@ var _ enginetest.ReadOnlyDatabaseHarness = (*DoltHarness)(nil)
 
 func newDoltHarness(t *testing.T) *DoltHarness {
 	dEnv := dtestutils.CreateTestEnv()
-	pro := sqle.NewDoltDatabaseProvider(dEnv.Config, dEnv.FS).WithDbFactoryUrl(doltdb.InMemDoltDB)
+	mrEnv, err := env.DoltEnvAsMultiEnv(context.Background(), dEnv)
+	require.NoError(t, err)
+	pro := sqle.NewDoltDatabaseProvider(dEnv.Config, mrEnv.FileSystem())
+	require.NoError(t, err)
+	pro = pro.WithDbFactoryUrl(doltdb.InMemDoltDB)
 
 	localConfig := dEnv.Config.WriteableConfig()
 
 	session, err := dsess.NewDoltSession(sql.NewEmptyContext(), enginetest.NewBaseSession(), pro, localConfig)
 	require.NoError(t, err)
-	return &DoltHarness{
+	dh := &DoltHarness{
 		t:              t,
 		session:        session,
 		skippedQueries: defaultSkippedQueries,
 	}
+
+	format := dEnv.DoltDB.Format()
+	if types.IsFormat_DOLT_1(format) {
+		dh = dh.WithSkippedQueries(newFormatSkippedQueries)
+	}
+
+	return dh
 }
 
 var defaultSkippedQueries = []string{
-	"show variables",           // we set extra variables
-	"show create table fk_tbl", // we create an extra key for the FK that vanilla gms does not
-	"show indexes from",        // we create / expose extra indexes (for foreign keys)
-	"json_arrayagg",            // TODO: aggregation ordering
-	"json_objectagg",           // TODO: aggregation ordering
-	"typestable",               // Bit type isn't working?
-	"dolt_commit_diff_",        // see broken queries in `dolt_system_table_queries.go`
+	"show variables",             // we set extra variables
+	"show create table fk_tbl",   // we create an extra key for the FK that vanilla gms does not
+	"show indexes from",          // we create / expose extra indexes (for foreign keys)
+	"json_arrayagg",              // TODO: aggregation ordering
+	"json_objectagg",             // TODO: aggregation ordering
+	"typestable",                 // Bit type isn't working?
+	"dolt_commit_diff_",          // see broken queries in `dolt_system_table_queries.go`
+	"show global variables like", // we set extra variables
+}
+
+var newFormatSkippedQueries = []string{
+	"alter",              // todo(andy): remove after DDL support
+	"desc",               // todo(andy): remove after secondary index support
+	"show",               // todo(andy): remove after secondary index support
+	"information_schema", // todo(andy): remove after secondary index support
+	"keyless",            // todo(andy): remove after keyless table support
 }
 
 // WithParallelism returns a copy of the harness with parallelism set to the given number of threads. A value of 0 or
@@ -90,7 +112,7 @@ func (d DoltHarness) WithParallelism(parallelism int) *DoltHarness {
 
 // WithSkippedQueries returns a copy of the harness with the given queries skipped
 func (d DoltHarness) WithSkippedQueries(queries []string) *DoltHarness {
-	d.skippedQueries = queries
+	d.skippedQueries = append(d.skippedQueries, queries...)
 	return &d
 }
 
@@ -123,32 +145,36 @@ func (d *DoltHarness) Parallelism() int {
 }
 
 func (d *DoltHarness) NewContext() *sql.Context {
-	return sql.NewContext(
-		context.Background(),
-		sql.WithSession(d.session))
+	return sql.NewContext(context.Background(), sql.WithSession(d.session))
+}
+
+func (d *DoltHarness) NewContextWithClient(client sql.Client) *sql.Context {
+	return sql.NewContext(context.Background(), sql.WithSession(d.newSessionWithClient(client)))
 }
 
 func (d *DoltHarness) NewSession() *sql.Context {
+	d.session = d.newSessionWithClient(sql.Client{Address: "localhost", User: "root"})
+	return d.NewContext()
+}
+
+func (d *DoltHarness) newSessionWithClient(client sql.Client) *dsess.DoltSession {
 	states := make([]dsess.InitialDbState, len(d.databases))
 	for i, db := range d.databases {
 		states[i] = getDbState(d.t, db, d.env)
 	}
 	dbs := dsqleDBsAsSqlDBs(d.databases)
 	pro := d.NewDatabaseProvider(dbs...)
-
 	localConfig := d.env.Config.WriteableConfig()
 
-	var err error
-	d.session, err = dsess.NewDoltSession(
+	dSession, err := dsess.NewDoltSession(
 		enginetest.NewContext(d),
-		enginetest.NewBaseSession(),
+		sql.NewBaseSessionWithClientServer("address", client, 1),
 		pro.(dsess.RevisionDatabaseProvider),
 		localConfig,
 		states...,
 	)
 	require.NoError(d.t, err)
-
-	return d.NewContext()
+	return dSession
 }
 
 func (d *DoltHarness) SupportsNativeIndexCreation() bool {
@@ -160,6 +186,10 @@ func (d *DoltHarness) SupportsForeignKeys() bool {
 }
 
 func (d *DoltHarness) SupportsKeylessTables() bool {
+	if types.IsFormat_DOLT_1(d.env.DoltDB.Format()) {
+		// todo(andy): support keyless tables
+		return false
+	}
 	return true
 }
 
@@ -199,7 +229,13 @@ func (d *DoltHarness) NewReadOnlyDatabases(names ...string) (dbs []sql.ReadOnlyD
 }
 
 func (d *DoltHarness) NewDatabaseProvider(dbs ...sql.Database) sql.MutableDatabaseProvider {
-	return sqle.NewDoltDatabaseProvider(d.env.Config, d.env.FS, dbs...).WithDbFactoryUrl(doltdb.InMemDoltDB)
+	if d.env == nil {
+		d.env = dtestutils.CreateTestEnv()
+	}
+	mrEnv, err := env.DoltEnvAsMultiEnv(context.Background(), d.env)
+	require.NoError(d.t, err)
+	pro := sqle.NewDoltDatabaseProvider(d.env.Config, mrEnv.FileSystem(), dbs...)
+	return pro.WithDbFactoryUrl(doltdb.InMemDoltDB)
 }
 
 func getDbState(t *testing.T, db sqle.Database, dEnv *env.DoltEnv) dsess.InitialDbState {
@@ -221,7 +257,7 @@ func getDbState(t *testing.T, db sqle.Database, dEnv *env.DoltEnv) dsess.Initial
 	}
 }
 
-func (d *DoltHarness) NewTable(db sql.Database, name string, schema sql.Schema) (sql.Table, error) {
+func (d *DoltHarness) NewTable(db sql.Database, name string, schema sql.PrimaryKeySchema) (sql.Table, error) {
 	var err error
 	if ro, ok := db.(sqle.ReadOnlyDatabase); ok {
 		err = ro.CreateTable(enginetest.NewContext(d).WithCurrentDB(db.Name()), name, schema)
@@ -240,7 +276,7 @@ func (d *DoltHarness) NewTable(db sql.Database, name string, schema sql.Schema) 
 
 // Dolt doesn't version tables per se, just the entire database. So ignore the name and schema and just create a new
 // branch with the given name.
-func (d *DoltHarness) NewTableAsOf(db sql.VersionedDatabase, name string, schema sql.Schema, asOf interface{}) sql.Table {
+func (d *DoltHarness) NewTableAsOf(db sql.VersionedDatabase, name string, schema sql.PrimaryKeySchema, asOf interface{}) sql.Table {
 	table, err := d.NewTable(db, name, schema)
 	if err != nil {
 		require.True(d.t, sql.ErrTableAlreadyExists.Is(err))
@@ -275,7 +311,7 @@ func (d *DoltHarness) SnapshotTable(db sql.VersionedDatabase, name string, asOf 
 	_, iter, err := e.Query(ctx,
 		"set @@"+dsess.HeadKey(db.Name())+" = COMMIT('-m', 'test commit');")
 	require.NoError(d.t, err)
-	_, err = sql.RowIterToRows(ctx, iter)
+	_, err = sql.RowIterToRows(ctx, nil, iter)
 	require.NoError(d.t, err)
 
 	headHash, err := ctx.GetSessionVariable(ctx, dsess.HeadKey(db.Name()))
@@ -290,7 +326,7 @@ func (d *DoltHarness) SnapshotTable(db sql.VersionedDatabase, name string, asOf 
 	_, iter, err = e.Query(ctx,
 		query)
 	require.NoError(d.t, err)
-	_, err = sql.RowIterToRows(ctx, iter)
+	_, err = sql.RowIterToRows(ctx, nil, iter)
 	require.NoError(d.t, err)
 
 	return nil

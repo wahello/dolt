@@ -47,6 +47,9 @@ const (
 	VarBinaryTypeIdentifier  Identifier = "varbinary"
 	VarStringTypeIdentifier  Identifier = "varstring"
 	YearTypeIdentifier       Identifier = "year"
+	PointTypeIdentifier      Identifier = "point"
+	LinestringTypeIdentifier Identifier = "linestring"
+	PolygonTypeIdentifier    Identifier = "polygon"
 )
 
 var Identifiers = map[Identifier]struct{}{
@@ -69,6 +72,9 @@ var Identifiers = map[Identifier]struct{}{
 	VarBinaryTypeIdentifier:  {},
 	VarStringTypeIdentifier:  {},
 	YearTypeIdentifier:       {},
+	PointTypeIdentifier:      {},
+	LinestringTypeIdentifier: {},
+	PolygonTypeIdentifier:    {},
 }
 
 // TypeInfo is an interface used for encoding type information.
@@ -104,9 +110,6 @@ type TypeInfo interface {
 
 	// NomsKind returns the NomsKind that best matches this TypeInfo.
 	NomsKind() types.NomsKind
-
-	// ParseValue parses a string and returns a go value that represents it according to this type.
-	ParseValue(ctx context.Context, vrw types.ValueReadWriter, str *string) (types.Value, error)
 
 	// Promote will promote the current TypeInfo to the largest representing TypeInfo of the same kind, such as Int8 to Int64.
 	Promote() TypeInfo
@@ -158,6 +161,18 @@ func FromSqlType(sqlType sql.Type) (TypeInfo, error) {
 		return DatetimeType, nil
 	case sqltypes.Year:
 		return YearType, nil
+	case sqltypes.Geometry:
+		// TODO: bad, but working way to determine which specific geometry type
+		switch sqlType.String() {
+		case sql.PolygonType{}.String():
+			return &polygonType{sqlType.(sql.PolygonType)}, nil
+		case sql.LinestringType{}.String():
+			return &linestringType{sqlType.(sql.LinestringType)}, nil
+		case sql.PointType{}.String():
+			return &pointType{sqlType.(sql.PointType)}, nil
+		default:
+			return nil, fmt.Errorf(`expected "PointTypeIdentifier" from SQL basetype "Geometry"`)
+		}
 	case sqltypes.Decimal:
 		decimalSQLType, ok := sqlType.(sql.DecimalType)
 		if !ok {
@@ -252,6 +267,12 @@ func FromTypeParams(id Identifier, params map[string]string) (TypeInfo, error) {
 		return CreateIntTypeFromParams(params)
 	case JSONTypeIdentifier:
 		return JSONType, nil
+	case PointTypeIdentifier:
+		return PointType, nil
+	case LinestringTypeIdentifier:
+		return LinestringType, nil
+	case PolygonTypeIdentifier:
+		return PolygonType, nil
 	case SetTypeIdentifier:
 		return CreateSetTypeFromParams(params)
 	case TimeTypeIdentifier:
@@ -288,8 +309,14 @@ func FromKind(kind types.NomsKind) TypeInfo {
 		return Int64Type
 	case types.JSONKind:
 		return JSONType
+	case types.LinestringKind:
+		return LinestringType
 	case types.NullKind:
 		return UnknownType
+	case types.PointKind:
+		return PointType
+	case types.PolygonKind:
+		return PolygonType
 	case types.StringKind:
 		return StringDefaultType
 	case types.TimestampKind:
@@ -305,20 +332,6 @@ func FromKind(kind types.NomsKind) TypeInfo {
 	default:
 		panic(fmt.Errorf(`no default type info for NomsKind "%v"`, kind.String()))
 	}
-}
-
-// Convert takes in a types.Value, as well as the source and destination TypeInfos, and
-// converts the TypeInfo into the applicable types.Value.
-func Convert(ctx context.Context, vrw types.ValueReadWriter, v types.Value, srcTi TypeInfo, destTi TypeInfo) (types.Value, error) {
-	str, err := srcTi.FormatValue(v)
-	if err != nil {
-		return nil, err
-	}
-	val, err := destTi.ParseValue(ctx, vrw, str)
-	if err != nil {
-		return nil, err
-	}
-	return val, nil
 }
 
 // IsStringType returns whether the given TypeInfo represents a CHAR, VARCHAR, or TEXT-derivative.

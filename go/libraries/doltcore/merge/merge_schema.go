@@ -94,6 +94,7 @@ func SchemaMerge(ourSch, theirSch, ancSch schema.Schema, tblName string) (sch sc
 	}
 
 	// TODO: We'll remove this once it's possible to get diff and merge on different primary key sets
+	// TODO: decide how to merge different orders of PKS
 	if !schema.ArePrimaryKeySetsDiffable(ourSch, theirSch) {
 		return nil, SchemaConflict{}, ErrMergeWithDifferentPkSets
 	}
@@ -117,6 +118,13 @@ func SchemaMerge(ourSch, theirSch, ancSch schema.Schema, tblName string) (sch sc
 	if err != nil {
 		return nil, sc, err
 	}
+
+	// TODO: Merge conflict should have blocked any primary key ordinal changes
+	err = sch.SetPkOrdinals(ourSch.GetPkOrdinals())
+	if err != nil {
+		return nil, sc, err
+	}
+
 	_ = mergedIdxs.Iter(func(index schema.Index) (stop bool, err error) {
 		sch.Indexes().AddIndex(index)
 		return false, nil
@@ -142,22 +150,29 @@ func ForeignKeysMerge(ctx context.Context, mergedRoot, ourRoot, theirRoot, ancRo
 		return nil, nil, err
 	}
 
+	ancSchs, err := ancRoot.GetAllSchemas(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	common, conflicts, err := foreignKeysInCommon(ours, theirs, anc)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	ourNewFKs, err := fkCollSetDifference(ours, anc)
+	ourNewFKs, err := fkCollSetDifference(ours, anc, ancSchs)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	theirNewFKs, err := fkCollSetDifference(theirs, anc)
+	theirNewFKs, err := fkCollSetDifference(theirs, anc, ancSchs)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// check for conflicts between foreign keys added on each branch since the ancestor
+	//TODO: figure out the best way to handle unresolved foreign keys here if one branch added an unresolved one and
+	// another branch added the same one but resolved
 	_ = ourNewFKs.Iter(func(ourFK doltdb.ForeignKey) (stop bool, err error) {
 		theirFK, ok := theirNewFKs.GetByTags(ourFK.TableColumns, ourFK.ReferencedTableColumns)
 		if ok && !ourFK.DeepEquals(theirFK) {
@@ -315,7 +330,8 @@ func mergeIndexes(mergedCC *schema.ColCollection, ourSch, theirSch, ancSch schem
 	// check for conflicts between indexes added on each branch since the ancestor
 	_ = ourNewIdxs.Iter(func(ourIdx schema.Index) (stop bool, err error) {
 		theirIdx, ok := theirNewIdxs.GetByNameCaseInsensitive(ourIdx.Name())
-		if ok {
+		// If both indexes are exactly equal then there isn't a conflict
+		if ok && !ourIdx.DeepEquals(theirIdx) {
 			conflicts = append(conflicts, IdxConflict{
 				Kind:   NameCollision,
 				Ours:   ourIdx,
@@ -332,7 +348,7 @@ func mergeIndexes(mergedCC *schema.ColCollection, ourSch, theirSch, ancSch schem
 }
 
 func indexesInCommon(mergedCC *schema.ColCollection, ours, theirs, anc schema.IndexCollection) (common schema.IndexCollection, conflicts []IdxConflict) {
-	common = schema.NewIndexCollection(mergedCC)
+	common = schema.NewIndexCollection(mergedCC, nil)
 	_ = ours.Iter(func(ourIdx schema.Index) (stop bool, err error) {
 		idxTags := ourIdx.IndexedColumnTags()
 		for _, t := range idxTags {
@@ -408,7 +424,7 @@ func indexesInCommon(mergedCC *schema.ColCollection, ours, theirs, anc schema.In
 }
 
 func indexCollSetDifference(left, right schema.IndexCollection, cc *schema.ColCollection) (d schema.IndexCollection) {
-	d = schema.NewIndexCollection(cc)
+	d = schema.NewIndexCollection(cc, nil)
 	_ = left.Iter(func(idx schema.Index) (stop bool, err error) {
 		idxTags := idx.IndexedColumnTags()
 		for _, t := range idxTags {
@@ -496,10 +512,13 @@ func foreignKeysInCommon(ourFKs, theirFKs, ancFKs *doltdb.ForeignKeyCollection) 
 	return common, conflicts, nil
 }
 
-func fkCollSetDifference(left, right *doltdb.ForeignKeyCollection) (d *doltdb.ForeignKeyCollection, err error) {
+// fkCollSetDifference returns a collection of all foreign keys that are in the given collection but not the ancestor
+// collection. This is specifically for finding differences between a descendant and an ancestor, and therefore should
+// not be used in the general case.
+func fkCollSetDifference(fkColl, ancestorFkColl *doltdb.ForeignKeyCollection, ancSchs map[string]schema.Schema) (d *doltdb.ForeignKeyCollection, err error) {
 	d, _ = doltdb.NewForeignKeyCollection()
-	err = left.Iter(func(fk doltdb.ForeignKey) (stop bool, err error) {
-		_, ok := right.GetByTags(fk.TableColumns, fk.ReferencedTableColumns)
+	err = fkColl.Iter(func(fk doltdb.ForeignKey) (stop bool, err error) {
+		_, ok := ancestorFkColl.GetMatchingKey(fk, ancSchs)
 		if !ok {
 			err = d.AddKeys(fk)
 		}

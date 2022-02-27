@@ -50,10 +50,20 @@ teardown() {
     [[ "$output" =~ "schema - Commands for showing and importing table schemas." ]] || false
     [[ "$output" =~ "table - Commands for copying, renaming, deleting, and exporting tables." ]] || false
     [[ "$output" =~ "conflicts - Commands for viewing and resolving merge conflicts." ]] || false
-    [[ "$output" =~ "migrate - Executes a repository migration to update to the latest format." ]] || false
+    [[ "$output" =~ "migrate - Executes a database migration to use the latest Dolt data format." ]] || false
     [[ "$output" =~ "gc - Cleans up unreferenced data from the repository." ]] || false
     [[ "$output" =~ "filter-branch - Edits the commit history using the provided query." ]] || false
     [[ "$output" =~ "merge-base - Find the common ancestor of two commits." ]] || false
+}
+
+@test "no-repo: dolt --help exits 0" {
+    run dolt --help
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "Valid commands for dolt are" ]
+
+    # Check help output for supported commands (spotcheck)
+    [[ "$output" =~ "init - Create an empty Dolt data repository." ]] || false
+    [[ "$output" =~ "status - Show the working tree status." ]] || false
 }
 
 @test "no-repo: check all commands for valid help text" {
@@ -144,6 +154,20 @@ NOT_VALID_REPO_ERROR="The current directory is not a valid dolt repository."
 @test "no-repo: dolt sql outside of a dolt repository" {
     run dolt sql -q "show databases"
     [ "$status" -eq 0 ]
+}
+
+@test "no-repo: dolt sql statements with no databases" {
+    run dolt sql -q "show tables"
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ "no database selected" ]] || false
+
+    run dolt sql -q "create table a (a int primary key)"
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ "no database selected" ]] || false
+
+    run dolt sql -q "show triggers"
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ "no database selected" ]] || false
 }
 
 @test "no-repo: dolt checkout outside of a dolt repository" {
@@ -281,3 +305,20 @@ NOT_VALID_REPO_ERROR="The current directory is not a valid dolt repository."
     [[ "$output" =~ "Failed to load the HOME directory" ]]
 }
 
+@test "no-repo: init with new storage version" {
+    DOLT_FORMAT_FEATURE_FLAG=true dolt init
+    run cat .dolt/noms/manifest
+    [[ "$output" =~ "__DOLT_1__" ]]
+    [[ ! "$output" =~ "__LD_1__" ]]
+}
+
+@test "no-repo: dolt login exits when receiving SIGINT" {
+    dolt login & # run this in the background
+    PID=$! # capture background PID
+    sleep 1 # Wait a sec
+    kill -SIGINT $PID # Send SIGINT (CTRL + C) to PID
+    sleep 1 # Wait another sec
+    run grep -q 'dolt' <(ps) # Ensure no process named dolt is running
+    [ "$output" == "" ]
+    run kill -9 $PID # Kill process if it doesn't pass
+}

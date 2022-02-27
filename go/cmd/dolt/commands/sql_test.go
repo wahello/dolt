@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/dolthub/dolt/go/cmd/dolt/commands/engine"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/dtestutils"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
@@ -388,7 +389,7 @@ func TestInsert(t *testing.T) {
 					tbl, _, err := root.GetTable(ctx, tableName)
 					assert.NoError(t, err)
 					taggedVals := row.TaggedValues{dtestutils.IdTag: types.UUID(expectedid)}
-					key := taggedVals.NomsTupleForPKCols(types.Format_7_18, dtestutils.TypedSchema.GetPKCols())
+					key := taggedVals.NomsTupleForPKCols(types.Format_Default, dtestutils.TypedSchema.GetPKCols())
 					kv, err := key.Value(ctx)
 					assert.NoError(t, err)
 					_, ok, err := table.GetRow(ctx, tbl, dtestutils.TypedSchema, kv.(types.Tuple))
@@ -472,7 +473,7 @@ func TestUpdate(t *testing.T) {
 					tbl, _, err := root.GetTable(ctx, tableName)
 					assert.NoError(t, err)
 					taggedVals := row.TaggedValues{dtestutils.IdTag: types.UUID(expectedid)}
-					key := taggedVals.NomsTupleForPKCols(types.Format_7_18, dtestutils.TypedSchema.GetPKCols())
+					key := taggedVals.NomsTupleForPKCols(types.Format_Default, dtestutils.TypedSchema.GetPKCols())
 					kv, err := key.Value(ctx)
 					assert.NoError(t, err)
 					row, ok, err := table.GetRow(ctx, tbl, dtestutils.TypedSchema, kv.(types.Tuple))
@@ -551,7 +552,7 @@ func TestDelete(t *testing.T) {
 					tbl, _, err := root.GetTable(ctx, tableName)
 					assert.NoError(t, err)
 					taggedVals := row.TaggedValues{dtestutils.IdTag: types.UUID(expectedid)}
-					key := taggedVals.NomsTupleForPKCols(types.Format_7_18, dtestutils.TypedSchema.GetPKCols())
+					key := taggedVals.NomsTupleForPKCols(types.Format_Default, dtestutils.TypedSchema.GetPKCols())
 					kv, err := key.Value(ctx)
 					assert.NoError(t, err)
 					_, ok, err := table.GetRow(ctx, tbl, dtestutils.TypedSchema, kv.(types.Tuple))
@@ -568,7 +569,7 @@ func TestCommitHooksNoErrors(t *testing.T) {
 	sqle.AddDoltSystemVariables()
 	sql.SystemVariables.SetGlobal(sqle.SkipReplicationErrorsKey, true)
 	sql.SystemVariables.SetGlobal(sqle.ReplicateToRemoteKey, "unknown")
-	hooks, err := GetCommitHooks(context.Background(), dEnv)
+	hooks, err := engine.GetCommitHooks(context.Background(), dEnv)
 	assert.NoError(t, err)
 	if len(hooks) < 1 {
 		t.Error("failed to produce noop hook")

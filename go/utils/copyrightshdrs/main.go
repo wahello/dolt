@@ -1,4 +1,4 @@
-// Copyright 2019 Dolthub, Inc.
+// Copyright 2019-2022 Dolthub, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"strings"
 )
 
-var ExpectedHeader = regexp.MustCompile(`// Copyright (2019|2020|2021|2019-2020|2019-2021|2020-2021) Dolthub, Inc.
+var ExpectedHeader = regexp.MustCompile(`// Copyright (2019|2020|2021|2022|2019-2020|2019-2021|2019-2022|2020-2021|2020-2022) Dolthub, Inc.
 //
 // Licensed under the Apache License, Version 2.0 \(the "License"\);
 // you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ var ExpectedHeader = regexp.MustCompile(`// Copyright (2019|2020|2021|2019-2020|
 
 `)
 
-var ExpectedHeaderForFileFromNoms = regexp.MustCompile(`// Copyright (2019|2020|2021|2019-2020|2019-2021|2020-2021) Dolthub, Inc.
+var ExpectedHeaderForFileFromNoms = regexp.MustCompile(`// Copyright (2019|2020|2021|2022|2019-2020|2019-2021|2019-2022|2020-2021|2020-2022) Dolthub, Inc.
 //
 // Licensed under the Apache License, Version 2.0 \(the "License"\);
 // you may not use this file except in compliance with the License.
@@ -73,6 +73,9 @@ var CopiedNomsFiles []CopiedNomsFile = []CopiedNomsFile{
 	{Path: "store/types/null_value.go", NomsPath: "go/types/number.go", HadCopyrightNotice: true},
 	{Path: "store/types/tuple.go", NomsPath: "go/types/struct.go", HadCopyrightNotice: true},
 	{Path: "store/types/uint.go", NomsPath: "go/types/number.go", HadCopyrightNotice: true},
+	{Path: "store/prolly/node_cursor.go", NomsPath: "go/types/sequence_cursor.go", HadCopyrightNotice: true},
+	{Path: "store/prolly/node_splitter.go", NomsPath: "go/types/rolling_value_hasher.go", HadCopyrightNotice: true},
+	{Path: "store/prolly/tree_chunker.go", NomsPath: "go/types/sequence_chunker.go", HadCopyrightNotice: true},
 
 	// These included source files from noms did not have copyright notices.
 	{Path: "store/types/common_supertype.go", NomsPath: "go/types/common_supertype.go", HadCopyrightNotice: false},
@@ -143,10 +146,8 @@ var CopiedNomsFiles []CopiedNomsFile = []CopiedNomsFile{
 	{Path: "store/datas/database_test.go", NomsPath: "go/datas/database_test.go", HadCopyrightNotice: true},
 	{Path: "store/datas/dataset.go", NomsPath: "go/datas/dataset.go", HadCopyrightNotice: true},
 	{Path: "store/datas/dataset_test.go", NomsPath: "go/datas/dataset_test.go", HadCopyrightNotice: true},
-	{Path: "store/datas/pull.go", NomsPath: "go/datas/pull.go", HadCopyrightNotice: true},
-	{Path: "store/datas/pull_test.go", NomsPath: "go/datas/pull_test.go", HadCopyrightNotice: true},
-	{Path: "store/datas/serialize_hashes.go", NomsPath: "go/datas/serialize_hashes.go", HadCopyrightNotice: true},
-	{Path: "store/datas/serialize_hashes_test.go", NomsPath: "go/datas/serialize_hashes_test.go", HadCopyrightNotice: true},
+	{Path: "store/datas/pull/pull.go", NomsPath: "go/datas/pull.go", HadCopyrightNotice: true},
+	{Path: "store/datas/pull/pull_test.go", NomsPath: "go/datas/pull_test.go", HadCopyrightNotice: true},
 	{Path: "store/diff/apply_patch.go", NomsPath: "go/diff/apply_patch.go", HadCopyrightNotice: true},
 	{Path: "store/diff/apply_patch_test.go", NomsPath: "go/diff/apply_patch_test.go", HadCopyrightNotice: true},
 	{Path: "store/diff/diff.go", NomsPath: "go/diff/diff.go", HadCopyrightNotice: true},
@@ -239,7 +240,6 @@ var CopiedNomsFiles []CopiedNomsFile = []CopiedNomsFile{
 	{Path: "store/nomdl/parser.go", NomsPath: "go/nomdl/parser.go", HadCopyrightNotice: true},
 	{Path: "store/nomdl/parser_test.go", NomsPath: "go/nomdl/parser_test.go", HadCopyrightNotice: true},
 	{Path: "store/perf/codec-perf-rig/main.go", NomsPath: "go/perf/codec-perf-rig/main.go", HadCopyrightNotice: true},
-	{Path: "store/perf/hash-perf-rig/main.go", NomsPath: "go/perf/hash-perf-rig/main.go", HadCopyrightNotice: true},
 	{Path: "store/perf/suite/suite.go", NomsPath: "go/perf/suite/suite.go", HadCopyrightNotice: true},
 	{Path: "store/perf/suite/suite_test.go", NomsPath: "go/perf/suite/suite_test.go", HadCopyrightNotice: true},
 	{Path: "store/sloppy/sloppy.go", NomsPath: "go/sloppy/sloppy.go", HadCopyrightNotice: true},

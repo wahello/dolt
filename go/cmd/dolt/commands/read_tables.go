@@ -59,7 +59,7 @@ func (cmd ReadTablesCmd) Description() string {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd ReadTablesCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, readTablesDocs, ap))
 }
 
@@ -69,7 +69,7 @@ func (cmd ReadTablesCmd) RequiresRepo() bool {
 	return false
 }
 
-func (cmd ReadTablesCmd) createArgParser() *argparser.ArgParser {
+func (cmd ReadTablesCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.ArgListHelp = [][2]string{
 		{"remote-repo", "Remote repository to retrieve data from"},
@@ -82,7 +82,7 @@ func (cmd ReadTablesCmd) createArgParser() *argparser.ArgParser {
 
 // Exec executes the command
 func (cmd ReadTablesCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, readTablesDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
@@ -149,7 +149,7 @@ func (cmd ReadTablesCmd) Exec(ctx context.Context, commandStr string, args []str
 	}
 
 	for _, tblName := range tblNames {
-		destRoot, verr = pullTableValue(ctx, dEnv, srcDB, srcRoot, destRoot, tblName, commitStr)
+		destRoot, verr = pullTableValue(ctx, dEnv, srcDB, srcRoot, destRoot, downloadLanguage, tblName, commitStr)
 
 		if verr != nil {
 			return HandleVErrAndExitCode(verr, usage)
@@ -165,7 +165,7 @@ func (cmd ReadTablesCmd) Exec(ctx context.Context, commandStr string, args []str
 	return 0
 }
 
-func pullTableValue(ctx context.Context, dEnv *env.DoltEnv, srcDB *doltdb.DoltDB, srcRoot, destRoot *doltdb.RootValue, tblName, commitStr string) (*doltdb.RootValue, errhand.VerboseError) {
+func pullTableValue(ctx context.Context, dEnv *env.DoltEnv, srcDB *doltdb.DoltDB, srcRoot, destRoot *doltdb.RootValue, language progLanguage, tblName, commitStr string) (*doltdb.RootValue, errhand.VerboseError) {
 	tbl, ok, err := srcRoot.GetTable(ctx, tblName)
 
 	if !ok {
@@ -182,8 +182,9 @@ func pullTableValue(ctx context.Context, dEnv *env.DoltEnv, srcDB *doltdb.DoltDB
 
 	newCtx, cancelFunc := context.WithCancel(ctx)
 	cli.Println("Retrieving", tblName)
-	wg, progChan, pullerEventCh := runProgFuncs(newCtx)
-	err = dEnv.DoltDB.PushChunksForRefHash(ctx, dEnv.TempTableFilesDir(), srcDB, tblHash, pullerEventCh)
+	runProgFunc := buildProgStarter(language)
+	wg, progChan, pullerEventCh := runProgFunc(newCtx)
+	err = dEnv.DoltDB.PullChunks(ctx, dEnv.TempTableFilesDir(), srcDB, tblHash, progChan, pullerEventCh)
 	stopProgFuncs(cancelFunc, wg, progChan, pullerEventCh)
 	if err != nil {
 		return nil, errhand.BuildDError("Failed reading chunks for remote table '%s' at '%s'", tblName, commitStr).AddCause(err).Build()

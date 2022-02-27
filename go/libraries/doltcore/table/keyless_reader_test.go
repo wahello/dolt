@@ -27,7 +27,6 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	dtu "github.com/dolthub/dolt/go/libraries/doltcore/dtestutils"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema/encoding"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -116,9 +115,6 @@ func TestKeylessTableReader(t *testing.T) {
 	dEnv := dtu.CreateTestEnv()
 	ctx := context.Background()
 	vrw := dEnv.DoltDB.ValueReadWriter()
-	schVal, err := encoding.MarshalSchemaAsNomsValue(ctx, vrw, sch)
-	require.NoError(t, err)
-	empty := dtu.MustMap(t, vrw)
 
 	compareRows := func(t *testing.T, expected []sql.Row, rdr table.SqlTableReader) {
 		for _, exp := range expected {
@@ -134,7 +130,7 @@ func TestKeylessTableReader(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rowMap := makeBag(vrw, sch, test.rows...)
-			tbl, err := doltdb.NewTable(ctx, vrw, schVal, rowMap, empty, nil)
+			tbl, err := doltdb.NewNomsTable(ctx, vrw, sch, rowMap, nil, nil)
 			require.NoError(t, err)
 			rdr, err := table.NewTableReader(ctx, tbl)
 			require.NoError(t, err)
@@ -142,7 +138,7 @@ func TestKeylessTableReader(t *testing.T) {
 		})
 		t.Run(test.name+"_buffered", func(t *testing.T) {
 			rowMap := makeBag(vrw, sch, test.rows...)
-			tbl, err := doltdb.NewTable(ctx, vrw, schVal, rowMap, empty, nil)
+			tbl, err := doltdb.NewNomsTable(ctx, vrw, sch, rowMap, nil, nil)
 			require.NoError(t, err)
 			rdr, err := table.NewBufferedTableReader(ctx, tbl)
 			require.NoError(t, err)

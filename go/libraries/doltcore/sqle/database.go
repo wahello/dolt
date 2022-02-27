@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/grant_tables"
 	"github.com/dolthub/vitess/go/vt/proto/query"
 	"gopkg.in/src-d/go-errors.v1"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dtables"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/globalstate"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/sqlutil"
+	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/writer"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -58,8 +60,15 @@ type SqlDatabase interface {
 func DbsAsDSQLDBs(dbs []sql.Database) []SqlDatabase {
 	dsqlDBs := make([]SqlDatabase, 0, len(dbs))
 	for _, db := range dbs {
-		sqlDb, ok := db.(SqlDatabase)
-		if !ok {
+		var sqlDb SqlDatabase
+		if sqlDatabase, ok := db.(SqlDatabase); ok {
+			sqlDb = sqlDatabase
+		} else if privDatabase, ok := db.(grant_tables.PrivilegedDatabase); ok {
+			if sqlDatabase, ok := privDatabase.Unwrap().(SqlDatabase); ok {
+				sqlDb = sqlDatabase
+			}
+		}
+		if sqlDb == nil {
 			continue
 		}
 		switch v := sqlDb.(type) {
@@ -342,6 +351,12 @@ func (db Database) GetTableInsensitiveWithRoot(ctx *sql.Context, root *doltdb.Ro
 			return nil, false, err
 		}
 		dt, found = dtables.NewLogTable(ctx, db.ddb, head), true
+	case doltdb.DiffTableName:
+		head, err := sess.GetHeadCommit(ctx, db.name)
+		if err != nil {
+			return nil, false, err
+		}
+		dt, found = dtables.NewUnscopedDiffTable(ctx, db.ddb, head), true
 	case doltdb.TableOfTablesInConflictName:
 		dt, found = dtables.NewTableOfTablesInConflict(ctx, db.ddb, root), true
 	case doltdb.TableOfTablesWithViolationsName:
@@ -512,7 +527,10 @@ func (db Database) getTable(ctx *sql.Context, root *doltdb.RootValue, tableName 
 
 	var table sql.Table
 
-	readonlyTable := NewDoltTable(tableName, sch, tbl, db, temporary, db.editOpts)
+	readonlyTable, err := NewDoltTable(tableName, sch, tbl, db, temporary, db.editOpts)
+	if err != nil {
+		return nil, false, err
+	}
 	if doltdb.IsReadOnlySystemTable(tableName) {
 		table = readonlyTable
 	} else if doltdb.HasDoltPrefix(tableName) {
@@ -683,7 +701,7 @@ func (db Database) dropTableFromAiTracker(ctx *sql.Context, tableName string) er
 }
 
 // CreateTable creates a table with the name and schema given.
-func (db Database) CreateTable(ctx *sql.Context, tableName string, sch sql.Schema) error {
+func (db Database) CreateTable(ctx *sql.Context, tableName string, sch sql.PrimaryKeySchema) error {
 	if doltdb.HasDoltPrefix(tableName) {
 		return ErrReservedTableName.New(tableName)
 	}
@@ -696,7 +714,7 @@ func (db Database) CreateTable(ctx *sql.Context, tableName string, sch sql.Schem
 }
 
 // Unlike the exported version CreateTable, createSqlTable doesn't enforce any table name checks.
-func (db Database) createSqlTable(ctx *sql.Context, tableName string, sch sql.Schema) error {
+func (db Database) createSqlTable(ctx *sql.Context, tableName string, sch sql.PrimaryKeySchema) error {
 	root, err := db.GetRoot(ctx)
 	if err != nil {
 		return err
@@ -716,6 +734,11 @@ func (db Database) createSqlTable(ctx *sql.Context, tableName string, sch sql.Sc
 	doltSch, err := sqlutil.ToDoltSchema(ctx, root, tableName, sch, headRoot)
 	if err != nil {
 		return err
+	}
+
+	// Prevent any tables that use Spatial Types as Primary Key from being created
+	if schema.IsUsingSpatialColAsKey(doltSch) {
+		return schema.ErrUsingSpatialKey.New(tableName)
 	}
 
 	return db.createDoltTable(ctx, tableName, root, doltSch)
@@ -755,7 +778,7 @@ func (db Database) createDoltTable(ctx *sql.Context, tableName string, root *dol
 }
 
 // CreateTemporaryTable creates a table that only exists the length of a session.
-func (db Database) CreateTemporaryTable(ctx *sql.Context, tableName string, sch sql.Schema) error {
+func (db Database) CreateTemporaryTable(ctx *sql.Context, tableName string, sch sql.PrimaryKeySchema) error {
 	if doltdb.HasDoltPrefix(tableName) {
 		return ErrReservedTableName.New(tableName)
 	}
@@ -767,7 +790,7 @@ func (db Database) CreateTemporaryTable(ctx *sql.Context, tableName string, sch 
 	return db.createTempSQLTable(ctx, tableName, sch)
 }
 
-func (db Database) createTempSQLTable(ctx *sql.Context, tableName string, sch sql.Schema) error {
+func (db Database) createTempSQLTable(ctx *sql.Context, tableName string, sch sql.PrimaryKeySchema) error {
 	// Get temporary root value
 	sess := dsess.DSessFromSess(ctx.Session)
 	tempTableRootValue, exists := db.GetTemporaryTablesRoot(ctx)
@@ -856,7 +879,7 @@ func (db Database) Flush(ctx *sql.Context) error {
 	if err != nil {
 		return err
 	}
-	editSession := dbState.EditSession
+	editSession := dbState.WriteSession
 
 	newRoot, err := editSession.Flush(ctx)
 	if err != nil {
@@ -870,7 +893,7 @@ func (db Database) Flush(ctx *sql.Context) error {
 
 	// Flush any changes made to temporary tables
 	// TODO: Shouldn't always be updating both roots. Needs to update either both roots or neither of them, atomically
-	tempTableEditSession := dbState.TempTableEditSession
+	tempTableEditSession := dbState.TempTableWriteSession
 	if tempTableEditSession != nil {
 		newTempTableRoot, err := tempTableEditSession.Flush(ctx)
 		if err != nil {
@@ -888,6 +911,18 @@ func (db Database) GetView(ctx *sql.Context, viewName string) (string, bool, err
 	root, err := db.GetRoot(ctx)
 	if err != nil {
 		return "", false, err
+	}
+
+	lwrViewName := strings.ToLower(viewName)
+	switch {
+	case strings.HasPrefix(lwrViewName, doltdb.DoltBlameViewPrefix):
+		tableName := lwrViewName[len(doltdb.DoltBlameViewPrefix):]
+
+		view, err := dtables.NewBlameView(ctx, tableName, root)
+		if err != nil {
+			return "", false, err
+		}
+		return view, true, nil
 	}
 
 	tbl, ok, err := root.GetTable(ctx, doltdb.SchemasTableName)
@@ -1027,7 +1062,7 @@ func (db Database) GetStoredProcedures(ctx *sql.Context) ([]sql.StoredProcedureD
 		return nil, nil
 	}
 
-	rowData, err := table.GetRowData(ctx)
+	rowData, err := table.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1102,37 +1137,20 @@ func (db Database) addFragToSchemasTable(ctx *sql.Context, fragType, name, defin
 		return existingErr
 	}
 
-	// If rows exist, then grab the highest id and add 1 to get the new id
-	indexToUse := int64(1)
 	ts, err := db.TableEditSession(ctx, tbl.IsTemporary())
 	if err != nil {
 		return err
 	}
 
-	te, err := ts.GetTableEditor(ctx, doltdb.SchemasTableName, tbl.sch)
+	root, err := ts.Flush(ctx)
 	if err != nil {
 		return err
 	}
-	dTable, err := te.Table(ctx)
+
+	// If rows exist, then grab the highest id and add 1 to get the new id
+	idx, err := nextSchemasTableIndex(ctx, root)
 	if err != nil {
 		return err
-	}
-	rowData, err := dTable.GetRowData(ctx)
-	if err != nil {
-		return err
-	}
-	if rowData.Len() > 0 {
-		keyTpl, _, err := rowData.Last(ctx)
-		if err != nil {
-			return err
-		}
-		if keyTpl != nil {
-			key, err := keyTpl.(types.Tuple).Get(1)
-			if err != nil {
-				return err
-			}
-			indexToUse = int64(key.(types.Int)) + 1
-		}
 	}
 
 	// Insert the new row into the db
@@ -1143,7 +1161,7 @@ func (db Database) addFragToSchemasTable(ctx *sql.Context, fragType, name, defin
 			retErr = err
 		}
 	}()
-	return inserter.Insert(ctx, sql.Row{fragType, name, definition, indexToUse})
+	return inserter.Insert(ctx, sql.Row{fragType, name, definition, idx})
 }
 
 func (db Database) dropFragFromSchemasTable(ctx *sql.Context, fragType, name string, missingErr error) error {
@@ -1173,7 +1191,7 @@ func (db Database) dropFragFromSchemasTable(ctx *sql.Context, fragType, name str
 }
 
 // TableEditSession returns the TableEditSession for this database from the given context.
-func (db Database) TableEditSession(ctx *sql.Context, isTemporary bool) (*editor.TableEditSession, error) {
+func (db Database) TableEditSession(ctx *sql.Context, isTemporary bool) (writer.WriteSession, error) {
 	sess := dsess.DSessFromSess(ctx.Session)
 	dbState, _, err := sess.LookupDbState(ctx, db.Name())
 	if err != nil {
@@ -1181,9 +1199,9 @@ func (db Database) TableEditSession(ctx *sql.Context, isTemporary bool) (*editor
 	}
 
 	if isTemporary {
-		return dbState.TempTableEditSession, nil
+		return dbState.TempTableWriteSession, nil
 	}
-	return dbState.EditSession, nil
+	return dbState.WriteSession, nil
 }
 
 // GetAllTemporaryTables returns all temporary tables

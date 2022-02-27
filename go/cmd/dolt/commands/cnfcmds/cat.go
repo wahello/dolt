@@ -57,7 +57,7 @@ func (cmd CatCmd) Description() string {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd CatCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return commands.CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, catDocs, ap))
 }
 
@@ -66,7 +66,7 @@ func (cmd CatCmd) EventType() eventsapi.ClientEventType {
 	return eventsapi.ClientEventType_CONF_CAT
 }
 
-func (cmd CatCmd) createArgParser() *argparser.ArgParser {
+func (cmd CatCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"table", "List of tables to be printed. '.' can be used to print conflicts for all tables."})
 
@@ -75,7 +75,7 @@ func (cmd CatCmd) createArgParser() *argparser.ArgParser {
 
 // Exec executes the command
 func (cmd CatCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, catDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 	args = apr.Args
@@ -154,11 +154,17 @@ func printConflicts(ctx context.Context, root *doltdb.RootValue, tblNames []stri
 				return errhand.BuildDError("error: unable to read database").AddCause(err).Build()
 			}
 
+			has, err := root.HasConflicts(ctx)
+			if err != nil {
+				return errhand.BuildDError("failed to read conflicts").AddCause(err).Build()
+			}
+			if !has {
+				return nil
+			}
+
 			cnfRd, err := merge.NewConflictReader(ctx, tbl)
 
-			if err == doltdb.ErrNoConflicts {
-				return nil
-			} else if err != nil {
+			if err != nil {
 				return errhand.BuildDError("failed to read conflicts").AddCause(err).Build()
 			}
 

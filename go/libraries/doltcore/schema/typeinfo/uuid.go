@@ -123,18 +123,6 @@ func (ti *uuidType) NomsKind() types.NomsKind {
 	return types.UUIDKind
 }
 
-// ParseValue implements TypeInfo interface.
-func (ti *uuidType) ParseValue(ctx context.Context, vrw types.ValueReadWriter, str *string) (types.Value, error) {
-	if str == nil || *str == "" {
-		return types.NullValue, nil
-	}
-	uuidVal, err := uuid.Parse(*str)
-	if err != nil {
-		return nil, err
-	}
-	return types.UUID(uuidVal), nil
-}
-
 // Promote implements TypeInfo interface.
 func (ti *uuidType) Promote() TypeInfo {
 	return ti
@@ -172,6 +160,12 @@ func uuidTypeConverter(ctx context.Context, src *uuidType, destTi TypeInfo) (tc 
 	case *intType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
 	case *jsonType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *linestringType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *pointType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *polygonType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
 	case *setType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)

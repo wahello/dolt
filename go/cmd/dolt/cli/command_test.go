@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
+	"github.com/dolthub/dolt/go/libraries/utils/argparser"
 )
 
 const (
@@ -36,6 +37,12 @@ type trackedCommand struct {
 	called      bool
 	cmdStr      string
 	args        []string
+}
+
+var _ Command = (*trackedCommand)(nil)
+
+func (cmd *trackedCommand) ArgParser() *argparser.ArgParser {
+	return nil
 }
 
 func NewTrackedCommand(name, desc string) *trackedCommand {
@@ -62,9 +69,9 @@ func (cmd *trackedCommand) RequiresRepo() bool {
 	return false
 }
 
-func (cmd *trackedCommand) Exec(ctx context.Context, cmdStr string, args []string, dEnv *env.DoltEnv) int {
+func (cmd *trackedCommand) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
 	cmd.called = true
-	cmd.cmdStr = cmdStr
+	cmd.cmdStr = commandStr
 	cmd.args = args
 	return 0
 }

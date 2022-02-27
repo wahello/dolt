@@ -79,7 +79,7 @@ SQL
     [ "$status" -eq "0" ]
     [[ "$output" =~ 'UNIQUE KEY `v1` (`v1`)' ]] || false
 
-	run dolt index ls test2
+    run dolt index ls test2
     [ "$status" -eq "0" ]
     [[ "$output" =~ "v1(v1)" ]] || false
     run dolt schema show test2
@@ -117,11 +117,11 @@ SQL
     run dolt index ls test
     [ "$status" -eq "0" ]
     [[ "$output" =~ "v1(v1)" ]] || false
-	[[ "$output" =~ "v1v2(v1, v2)" ]] || false
+    [[ "$output" =~ "v1v2(v1, v2)" ]] || false
     run dolt schema show test
     [ "$status" -eq "0" ]
     [[ "$output" =~ 'KEY `v1` (`v1`)' ]] || false
-	[[ "$output" =~ 'KEY `v1v2` (`v1`,`v2`)' ]] || false
+    [[ "$output" =~ 'KEY `v1v2` (`v1`,`v2`)' ]] || false
 }
 
 @test "index: CREATE INDEX then INSERT" {
@@ -548,27 +548,27 @@ SQL
 INSERT INTO onepk VALUES (1, 99, 51), (2, 11, 55), (3, 88, 52), (4, 22, 54), (5, 77, 53);
 CREATE INDEX idx_v1 ON onepk(v1);
 SQL
-    run dolt sql -q "CREATE INDEX idx_bad ON onepk(v1)"
-    [ "$status" -eq "1" ]
+    run dolt sql -q "CREATE INDEX idx_v1_dup ON onepk(v1)"
+    [ "$status" -eq "0" ]
     run dolt index ls onepk
     [ "$status" -eq "0" ]
-    ! [[ "$output" =~ "idx_bad(v1)" ]] || false
+    [[ "$output" =~ "idx_v1_dup(v1)" ]] || false
     run dolt schema show onepk
     [ "$status" -eq "0" ]
-    ! [[ "$output" =~ 'KEY `idx_bad` (`v1`)' ]] || false
+    [[ "$output" =~ 'KEY `idx_v1_dup` (`v1`)' ]] || false
     
     dolt sql <<SQL
 INSERT INTO twopk VALUES (1, 99, 51, 63), (2, 11, 55, 64), (3, 88, 52, 61), (4, 22, 54, 65), (5, 77, 53, 61);
-CREATE INDEX idx_v ON twopk(v2, v1);
+CREATE INDEX idx_v2_v1 ON twopk(v2, v1);
 SQL
-    run dolt sql -q "CREATE INDEX idx_bud ON twopk(v2, v1)"
-    [ "$status" -eq "1" ]
+    run dolt sql -q "CREATE INDEX idx_v2_v1_dup ON twopk(v2, v1)"
+    [ "$status" -eq "0" ]
     run dolt index ls twopk
     [ "$status" -eq "0" ]
-    ! [[ "$output" =~ "idx_bud(v2, v1)" ]] || false
+    [[ "$output" =~ "idx_v2_v1_dup(v2, v1)" ]] || false
     run dolt schema show twopk
     [ "$status" -eq "0" ]
-    ! [[ "$output" =~ 'KEY `idx_bud` (`v2`,`v1`)' ]] || false
+    [[ "$output" =~ 'KEY `idx_v2_v1_dup` (`v2`,`v1`)' ]] || false
 }
 
 @test "index: Disallow 'dolt_' name prefix" {
@@ -811,7 +811,6 @@ SQL
 }
 
 @test "index: TRUNCATE TABLE" {
-    skip "TRUNCATE not yet supported"
     dolt sql <<SQL
 CREATE INDEX idx_v1 ON onepk(v1);
 INSERT INTO onepk VALUES (1, 99, 51), (2, 11, 55), (3, 88, 52), (4, 22, 54), (5, 77, 53);
@@ -1695,20 +1694,24 @@ INSERT INTO twopk VALUES (1, 99, 51, 63), (2, 11, 55, 64), (3, 88, 52, 61), (4, 
 ALTER TABLE onepk ADD COLUMN v3 BIGINT;
 ALTER TABLE twopk ADD COLUMN v3 BIGINT NOT NULL DEFAULT 7;
 SQL
+
     run dolt index cat onepk idx_v1 -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "v1,pk1" ]] || false
     [[ "$output" =~ "11,2" ]] || false
     [[ "$output" =~ "99,1" ]] || false
     [[ "${#lines[@]}" = "6" ]] || false
+
     run dolt schema show onepk
     [ "$status" -eq "0" ]
     [[ "$output" =~ 'KEY `idx_v1` (`v1`)' ]] || false
+
     run dolt sql -q "SELECT * FROM onepk WHERE v1 = 77" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "pk1,v1,v2,v3" ]] || false
     [[ "$output" =~ "5,77,53," ]] || false
     [[ "${#lines[@]}" = "2" ]] || false
+
     run dolt sql -q "SELECT * FROM onepk WHERE v1 = 77" -r=tabular
     [ "$status" -eq "0" ]
     [[ "$output" =~ "NULL" ]] || false
@@ -1719,9 +1722,11 @@ SQL
     [[ "$output" =~ "61,53,5,77" ]] || false
     [[ "$output" =~ "65,54,4,22" ]] || false
     [[ "${#lines[@]}" = "6" ]] || false
+
     run dolt schema show twopk
     [ "$status" -eq "0" ]
     [[ "$output" =~ 'KEY `idx_v` (`v2`,`v1`)' ]] || false
+
     run dolt sql -q "SELECT * FROM twopk WHERE v2 = 61 AND v1 = 53" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "pk1,pk2,v1,v2,v3" ]] || false
@@ -2112,13 +2117,6 @@ SQL
     [[ "$output" =~ "pk1" ]] || false
     [[ "$output" =~ "5" ]] || false
     [[ "${#lines[@]}" = "2" ]] || false
-    dolt sql <<SQL
-DELETE FROM onepk;
-INSERT INTO onepk VALUES (6, 11, 55);
-SQL
-    run dolt table import -u onepk `batshelper index_onepk.csv`
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ "duplicate key" ]] || false
 }
 
 @test "index: UNIQUE dolt table import -r" {
@@ -2150,7 +2148,7 @@ SQL
     dolt sql -q "DELETE FROM onepk"
     run dolt table import -r onepk `batshelper index_onepk_non_unique.csv`
     [ "$status" -eq "1" ]
-    [[ "$output" =~ "duplicate key" ]] || false
+    [[ "$output" =~ "duplicate unique key" ]] || false
 }
 
 @test "index: Merge without conflicts" {
@@ -2298,7 +2296,7 @@ SQL
     dolt checkout main
     dolt merge other
     dolt conflicts resolve onepk 4
-    dolt sql --disable-batch <<SQL
+    dolt sql  <<SQL
 set autocommit = off;
 UPDATE onepk SET v1 = -11, v2 = 11 WHERE pk1 = 1;
 UPDATE onepk SET v1 = -22, v2 = 22 WHERE pk1 = 2;
@@ -2445,8 +2443,7 @@ SQL
     # Check index creation
     dolt sql -q "CREATE INDEX abc ON child (parent_value);"
     run dolt sql -q "CREATE INDEX abc_idx ON child_idx (parent_value);"
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ "duplicate" ]] || false
+    [ "$status" -eq "0" ]
     dolt sql -q "CREATE UNIQUE INDEX abc_unq ON child_unq (parent_value);"
     run dolt sql -q "CREATE UNIQUE INDEX abc_non_unq ON child_non_unq (parent_value);"
     [ "$status" -eq "1" ]
@@ -2460,7 +2457,7 @@ SQL
     run dolt schema show child_idx
     [ "$status" -eq "0" ]
     [[ "$output" =~ 'KEY `parent_value` (`parent_value`)' ]] || false
-    ! [[ "$output" =~ 'KEY `abc_idx` (`parent_value`)' ]] || false
+    [[ "$output" =~ 'KEY `abc_idx` (`parent_value`)' ]] || false
     run dolt schema show child_unq
     [ "$status" -eq "0" ]
     [[ "$output" =~ 'KEY `abc_unq` (`parent_value`)' ]] || false
@@ -2553,4 +2550,63 @@ SQL
     run dolt sql -r csv -q "SELECT * FROM mytable"
     [[ "$output" =~ "1,jon" ]] || false
     ! [[ "$output" =~ "2,jon" ]] || false
+}
+
+@test "index: indexes should not be used when functions modify the column" {
+    dolt sql -q "create table test (id int, c1 varchar(255), primary key(id))"
+    dolt sql -q "insert into test values (1, 'Aaaa'), (2, 'aAaa')"
+
+    run dolt sql -q "select * from test"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "Aaaa" ]] || false
+    [[ "$output" =~ "aAaa" ]] || false
+    
+    run dolt sql -q "select * from test where lower(c1)='aaaa'"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "Aaaa" ]] || false
+    [[ "$output" =~ "aAaa" ]] || false
+
+    dolt sql -q "create index test on test (c1)"
+    dolt sql -q "select * from test where lower(c1)='aaaa'"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "Aaaa" ]] || false
+    [[ "$output" =~ "aAaa" ]] || false
+
+    dolt sql -q "create table test2 (id int, c1 varchar(255), c2 varchar(255), primary key(id))"
+    dolt sql -q "insert into test2 values (1, 'Aaaa', 'Bbbb'), (2, 'aAaa', 'bBbb')"
+
+    run dolt sql -q "select * from test2"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "Aaaa" ]] || false
+    [[ "$output" =~ "aAaa" ]] || false
+    [[ "$output" =~ "Bbbb" ]] || false
+    [[ "$output" =~ "bBbb" ]] || false
+
+    run dolt sql -q "select * from test2 where lower(c1)='aaaa' and lower(c2)='bbbb'"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "Aaaa" ]] || false
+    [[ "$output" =~ "aAaa" ]] || false
+    [[ "$output" =~ "Bbbb" ]] || false
+    [[ "$output" =~ "bBbb" ]] || false
+
+    dolt sql -q "create index test2 on test2 (c1,c2)"
+    run dolt sql -q "select * from test2 where lower(c1)='aaaa' and lower(c2)='bbbb'"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "Aaaa" ]] || false
+    [[ "$output" =~ "aAaa" ]] || false
+    [[ "$output" =~ "Bbbb" ]] || false
+    [[ "$output" =~ "bBbb" ]] || false
+}
+
+@test "index: alter table create index for different database" {
+    dolt sql  <<SQL
+CREATE DATABASE public;
+CREATE TABLE public.test (pk integer NOT NULL, c1 integer);
+ALTER TABLE public.test ADD CONSTRAINT index_test_pkey PRIMARY KEY (pk);
+CREATE INDEX index_test_c1_idx ON public.test (c1);
+SQL
+
+    run dolt sql -q "show create table public.test"
+    [ $status -eq 0 ]
+    [[ "$output" =~ "KEY \`index_test_c1_idx\`" ]] || false
 }

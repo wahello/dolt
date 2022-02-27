@@ -53,7 +53,7 @@ type HistoryTable struct {
 	name                  string
 	ddb                   *doltdb.DoltDB
 	ss                    *schema.SuperSchema
-	sqlSch                sql.Schema
+	sqlSch                sql.PrimaryKeySchema
 	commitFilters         []sql.Expression
 	rowFilters            []sql.Expression
 	cmItr                 doltdb.CommitItr
@@ -247,12 +247,12 @@ func (ht *HistoryTable) String() string {
 
 // Schema returns the schema for the history table, which will be the super set of the schemas from the history
 func (ht *HistoryTable) Schema() sql.Schema {
-	return ht.sqlSch
+	return ht.sqlSch.Schema
 }
 
 // Partitions returns a PartitionIter which will be used in getting partitions each of which is used to create RowIter.
 func (ht *HistoryTable) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
-	return &commitPartitioner{ctx, ht.cmItr}, nil
+	return &commitPartitioner{ht.cmItr}, nil
 }
 
 // PartitionRows takes a partition and returns a row iterator for that partition
@@ -275,13 +275,12 @@ func (cp *commitPartition) Key() []byte {
 
 // commitPartitioner creates partitions from a CommitItr
 type commitPartitioner struct {
-	ctx   *sql.Context
 	cmItr doltdb.CommitItr
 }
 
 // Next returns the next partition and nil, io.EOF when complete
-func (cp commitPartitioner) Next() (sql.Partition, error) {
-	h, cm, err := cp.cmItr.Next(cp.ctx)
+func (cp commitPartitioner) Next(ctx *sql.Context) (sql.Partition, error) {
+	h, cm, err := cp.cmItr.Next(ctx)
 
 	if err != nil {
 		return nil, err
@@ -296,7 +295,6 @@ func (cp commitPartitioner) Close(*sql.Context) error {
 }
 
 type rowItrForTableAtCommit struct {
-	ctx            context.Context
 	rd             table.TableReadCloser
 	sch            schema.Schema
 	toSuperSchConv *rowconv.RowConverter
@@ -328,21 +326,18 @@ func newRowItrForTableAtCommit(
 		return &rowItrForTableAtCommit{empty: true}, nil
 	}
 
-	m, err := tbl.GetRowData(ctx)
+	m, err := tbl.GetNomsRowData(ctx)
 
 	if err != nil {
 		return nil, err
 	}
 
-	schRef, err := tbl.GetSchemaRef()
-	schHash := schRef.TargetHash()
-
+	tblSch, err := tbl.GetSchema(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	tblSch, err := doltdb.RefToSchema(ctx, root.VRW(), schRef)
-
+	schHash, err := tbl.GetSchemaHash(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +348,9 @@ func newRowItrForTableAtCommit(
 		return nil, err
 	}
 
+	// TODO: ThreadSafeCRFuncCache is an older and suboptimal filtering approach that should be replaced
+	//       with the unified indexing path that all other tables use. This logic existed before there was a
+	//       reasonable way to apply multiple filter conditions to an indexed table scan.
 	createReaderFunc, err := readerCreateFuncCache.GetOrCreate(schHash, tbl.Format(), tblSch, filters)
 
 	if err != nil {
@@ -386,7 +384,6 @@ func newRowItrForTableAtCommit(
 	}
 
 	return &rowItrForTableAtCommit{
-		ctx:            ctx,
 		rd:             rd,
 		sch:            sch,
 		toSuperSchConv: toSuperSchConv,
@@ -401,12 +398,12 @@ func newRowItrForTableAtCommit(
 
 // Next retrieves the next row. It will return io.EOF if it's the last row. After retrieving the last row, Close
 // will be automatically closed.
-func (tblItr *rowItrForTableAtCommit) Next() (sql.Row, error) {
+func (tblItr *rowItrForTableAtCommit) Next(ctx *sql.Context) (sql.Row, error) {
 	if tblItr.empty {
 		return nil, io.EOF
 	}
 
-	r, err := tblItr.rd.ReadRow(tblItr.ctx)
+	r, err := tblItr.rd.ReadRow(ctx)
 
 	if err != nil {
 		return nil, err
@@ -430,9 +427,9 @@ func (tblItr *rowItrForTableAtCommit) Next() (sql.Row, error) {
 }
 
 // Close the iterator.
-func (tblItr *rowItrForTableAtCommit) Close(*sql.Context) error {
+func (tblItr *rowItrForTableAtCommit) Close(ctx *sql.Context) error {
 	if tblItr.rd != nil {
-		return tblItr.rd.Close(tblItr.ctx)
+		return tblItr.rd.Close(ctx)
 	}
 
 	return nil
@@ -448,4 +445,28 @@ func calcSuperSchema(ctx context.Context, wr *doltdb.RootValue, tblName string) 
 	}
 
 	return ss, nil
+}
+
+// rowConvForSchema creates a RowConverter for transforming rows with the given schema to this super schema.
+func rowConvForSchema(ctx context.Context, vrw types.ValueReadWriter, ss *schema.SuperSchema, sch schema.Schema) (*rowconv.RowConverter, error) {
+	if schema.SchemasAreEqual(sch, schema.EmptySchema) {
+		return rowconv.IdentityConverter, nil
+	}
+
+	inNameToOutName, err := ss.NameMapForSchema(sch)
+	if err != nil {
+		return nil, err
+	}
+
+	ssch, err := ss.GenerateSchema()
+	if err != nil {
+		return nil, err
+	}
+
+	fm, err := rowconv.NameMapping(sch, ssch, inNameToOutName)
+	if err != nil {
+		return nil, err
+	}
+
+	return rowconv.NewRowConverter(ctx, vrw, fm)
 }

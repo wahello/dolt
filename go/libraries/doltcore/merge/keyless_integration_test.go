@@ -288,6 +288,7 @@ func TestKeylessMergeConflicts(t *testing.T) {
 
 		t.Run(test.name+"_resolved_ours", func(t *testing.T) {
 			dEnv := dtu.CreateTestEnv()
+
 			setupTest(t, ctx, dEnv, test.setup)
 
 			resolve := cnfcmds.ResolveCmd{}
@@ -304,6 +305,7 @@ func TestKeylessMergeConflicts(t *testing.T) {
 		})
 		t.Run(test.name+"_resolved_theirs", func(t *testing.T) {
 			dEnv := dtu.CreateTestEnv()
+
 			setupTest(t, ctx, dEnv, test.setup)
 
 			resolve := cnfcmds.ResolveCmd{}
@@ -323,7 +325,7 @@ func TestKeylessMergeConflicts(t *testing.T) {
 
 // |expected| is a tupleSet to compensate for random storage order
 func assertKeylessRows(t *testing.T, ctx context.Context, tbl *doltdb.Table, expected tupleSet) {
-	rowData, err := tbl.GetRowData(ctx)
+	rowData, err := tbl.GetNomsRowData(ctx)
 	require.NoError(t, err)
 
 	assert.Equal(t, int(rowData.Len()), len(expected))

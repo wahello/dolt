@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
+
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/dtestutils"
@@ -27,10 +29,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema/encoding"
-	"github.com/dolthub/dolt/go/libraries/doltcore/table"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
-	"github.com/dolthub/dolt/go/libraries/doltcore/table/typed/noms"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -157,7 +156,7 @@ func (mr *MultiRepoTestSetup) NewBranch(dbName, branchName string) {
 
 func (mr *MultiRepoTestSetup) CheckoutBranch(dbName, branchName string) {
 	dEnv := mr.MrEnv.GetEnv(dbName)
-	err := actions.CheckoutBranch(context.Background(), dEnv, branchName)
+	err := actions.CheckoutBranch(context.Background(), dEnv, branchName, false)
 	if err != nil {
 		mr.Errhand(err)
 	}
@@ -316,38 +315,25 @@ func (mr *MultiRepoTestSetup) PushToRemote(dbName, remoteName, branchName string
 
 // createTestTable creates a new test table with the name, schema, and rows given.
 func createTestTable(dEnv *env.DoltEnv, tableName string, sch schema.Schema, errhand func(args ...interface{}), rs ...row.Row) {
-	imt := table.NewInMemTable(sch)
-
-	for _, r := range rs {
-		_ = imt.AppendRow(r)
-	}
-
 	ctx := context.Background()
 	vrw := dEnv.DoltDB.ValueReadWriter()
-	rd := table.NewInMemTableReader(imt)
-	wr := noms.NewNomsMapCreator(ctx, vrw, sch)
 
-	_, _, err := table.PipeRows(ctx, rd, wr, false)
+	rowMap, err := types.NewMap(ctx, vrw)
 	if err != nil {
 		errhand(err)
 	}
-	err = rd.Close(ctx)
+
+	me := rowMap.Edit()
+	for _, r := range rs {
+		k, v := r.NomsMapKey(sch), r.NomsMapValue(sch)
+		me.Set(k, v)
+	}
+	rowMap, err = me.Map(ctx)
 	if err != nil {
 		errhand(err)
 	}
-	err = wr.Close(ctx)
-	if err != nil {
-		errhand(err)
-	}
-	schVal, err := encoding.MarshalSchemaAsNomsValue(ctx, vrw, sch)
-	if err != nil {
-		errhand(err)
-	}
-	empty, err := types.NewMap(ctx, vrw)
-	if err != nil {
-		errhand(err)
-	}
-	tbl, err := doltdb.NewTable(ctx, vrw, schVal, wr.GetMap(), empty, nil)
+
+	tbl, err := doltdb.NewNomsTable(ctx, vrw, sch, rowMap, nil, nil)
 	if err != nil {
 		errhand(err)
 	}
@@ -360,11 +346,11 @@ func createTestTable(dEnv *env.DoltEnv, tableName string, sch schema.Schema, err
 	if err != nil {
 		errhand(err)
 	}
-	rows, err := tbl.GetRowData(ctx)
+	rows, err := tbl.GetNomsRowData(ctx)
 	if err != nil {
 		errhand(err)
 	}
-	indexes, err := tbl.GetIndexData(ctx)
+	indexes, err := tbl.GetIndexSet(ctx)
 	if err != nil {
 		errhand(err)
 	}
@@ -374,19 +360,14 @@ func createTestTable(dEnv *env.DoltEnv, tableName string, sch schema.Schema, err
 	}
 }
 
-func putTableToWorking(ctx context.Context, dEnv *env.DoltEnv, sch schema.Schema, rows types.Map, indexData types.Map, tableName string, autoVal types.Value) error {
+func putTableToWorking(ctx context.Context, dEnv *env.DoltEnv, sch schema.Schema, rows types.Map, indexData durable.IndexSet, tableName string, autoVal types.Value) error {
 	root, err := dEnv.WorkingRoot(ctx)
 	if err != nil {
 		return doltdb.ErrNomsIO
 	}
 
 	vrw := dEnv.DoltDB.ValueReadWriter()
-	schVal, err := encoding.MarshalSchemaAsNomsValue(ctx, vrw, sch)
-	if err != nil {
-		return env.ErrMarshallingSchema
-	}
-
-	tbl, err := doltdb.NewTable(ctx, vrw, schVal, rows, indexData, autoVal)
+	tbl, err := doltdb.NewNomsTable(ctx, vrw, sch, rows, indexData, autoVal)
 	if err != nil {
 		return err
 	}

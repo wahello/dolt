@@ -45,7 +45,14 @@ var loginDocs = cli.CommandDocumentationContent{
 	Synopsis: []string{"[{{.LessThan}}creds{{.GreaterThan}}]"},
 }
 
+// The LoginCmd doesn't handle its own signals, but should stop cancel global context when receiving SIGINT signal
+func (cmd LoginCmd) InstallsSignalHandlers() bool {
+	return true
+}
+
 type LoginCmd struct{}
+
+var _ cli.SignalCommand = SqlCmd{}
 
 // Name is returns the name of the Dolt cli command. This is what is used on the command line to invoke the command
 func (cmd LoginCmd) Name() string {
@@ -65,11 +72,11 @@ func (cmd LoginCmd) RequiresRepo() bool {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd LoginCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, loginDocs, ap))
 }
 
-func (cmd LoginCmd) createArgParser() *argparser.ArgParser {
+func (cmd LoginCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"creds", "A specific credential to use for login."})
 	return ap
@@ -82,7 +89,7 @@ func (cmd LoginCmd) EventType() eventsapi.ClientEventType {
 
 // Exec executes the command
 func (cmd LoginCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, loginDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 

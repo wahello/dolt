@@ -25,7 +25,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
-	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/datas/pull"
 	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -48,7 +48,7 @@ func createUninitializedEnv() *env.DoltEnv {
 
 func TestGetDotDotRevisions(t *testing.T) {
 	dEnv := createUninitializedEnv()
-	err := dEnv.InitRepo(context.Background(), types.Format_LD_1, "Bill Billerson", "bill@billerson.com", env.DefaultInitBranch)
+	err := dEnv.InitRepo(context.Background(), types.Format_Default, "Bill Billerson", "bill@billerson.com", env.DefaultInitBranch)
 	require.NoError(t, err)
 
 	cs, err := doltdb.NewCommitSpec(env.DefaultInitBranch)
@@ -218,10 +218,10 @@ func mustForkDB(t *testing.T, fromDB *doltdb.DoltDB, bn string, cm *doltdb.Commi
 	stref, err := cm.GetStRef()
 	require.NoError(t, err)
 	forkEnv := createUninitializedEnv()
-	err = forkEnv.InitRepo(context.Background(), types.Format_LD_1, "Bill Billerson", "bill@billerson.com", env.DefaultInitBranch)
+	err = forkEnv.InitRepo(context.Background(), types.Format_Default, "Bill Billerson", "bill@billerson.com", env.DefaultInitBranch)
 	require.NoError(t, err)
-	p1 := make(chan datas.PullProgress)
-	p2 := make(chan datas.PullerEvent)
+	p1 := make(chan pull.PullProgress)
+	p2 := make(chan pull.PullerEvent)
 	go func() {
 		for range p1 {
 		}
@@ -230,8 +230,8 @@ func mustForkDB(t *testing.T, fromDB *doltdb.DoltDB, bn string, cm *doltdb.Commi
 		for range p2 {
 		}
 	}()
-	err = forkEnv.DoltDB.PullChunks(context.Background(), "", fromDB, stref, p1, p2)
-	if err == datas.ErrDBUpToDate {
+	err = forkEnv.DoltDB.PullChunks(context.Background(), "", fromDB, stref.TargetHash(), p1, p2)
+	if err == pull.ErrDBUpToDate {
 		err = nil
 	}
 	require.NoError(t, err)

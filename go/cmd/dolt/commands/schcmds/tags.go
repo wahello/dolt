@@ -22,6 +22,7 @@ import (
 
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/dolt/go/cmd/dolt/commands"
+	"github.com/dolthub/dolt/go/cmd/dolt/commands/engine"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
@@ -52,11 +53,11 @@ func (cmd TagsCmd) Description() string {
 }
 
 func (cmd TagsCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return commands.CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, tblTagsDocs, ap))
 }
 
-func (cmd TagsCmd) createArgParser() *argparser.ArgParser {
+func (cmd TagsCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"table", "table(s) whose tags will be displayed."})
 	ap.SupportsString(commands.FormatFlag, "r", "result output format", "How to format result output. Valid values are tabular, csv, json. Defaults to tabular.")
@@ -64,7 +65,7 @@ func (cmd TagsCmd) createArgParser() *argparser.ArgParser {
 }
 
 func (cmd TagsCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, tblTagsDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -124,7 +125,7 @@ func (cmd TagsCmd) Exec(ctx context.Context, commandStr string, args []string, d
 
 	}
 
-	outputFmt := commands.FormatTabular
+	outputFmt := engine.FormatTabular
 
 	formatSr, ok := apr.GetValue(commands.FormatFlag)
 
@@ -138,7 +139,7 @@ func (cmd TagsCmd) Exec(ctx context.Context, commandStr string, args []string, d
 	}
 
 	sqlCtx := sql.NewContext(ctx)
-	err = commands.PrettyPrintResults(sqlCtx, outputFmt, headerSchema, sql.RowsToRowIter(rows...), false)
+	err = engine.PrettyPrintResults(sqlCtx, outputFmt, headerSchema, sql.RowsToRowIter(rows...), false)
 
 	return commands.HandleVErrAndExitCode(errhand.VerboseErrorFromError(err), usage)
 }

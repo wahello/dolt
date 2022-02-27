@@ -13,7 +13,8 @@ versions files, Dolt versions tables. It's like Git and MySQL had a
 baby!
 
 We also built [DoltHub](https://www.dolthub.com), a place to share
-Dolt databases. We host public data for free!
+Dolt databases. We host public data for free! If you want to host
+your own version of DoltHub, we have [DoltLab](https://www.doltlab.com).
 
 [Join us on Discord](https://discord.com/invite/RFwfYpu) to say hi and
 ask questions!
@@ -383,7 +384,6 @@ explore and clone. Here are some of our favorites.
 - Public Holidays: https://www.dolthub.com/repositories/oscarbatori/holidays
 - IP Address to Country: https://www.dolthub.com/repositories/dolthub/ip-to-country
 
-
 # Running A SQL Server
 
 Dolt comes built in with a SQL server that you can connect to with either the MySQL client, or your favorite MySQL-compatible tool.
@@ -402,9 +402,9 @@ mysql -h 127.0.0.1 -u root  --port 3306 -p
 
 Checkout these portions of the documentation for more configuration options.
 
-* [Starting a SQL
+- [Starting a SQL
   server](https://docs.dolthub.com/reference/cli#dolt-sql-server)
-* [Connecting to a server with an editor](https://docs.dolthub.com/integrations/sql-editors)
+- [Connecting to a server with an editor](https://docs.dolthub.com/reference/sql/supported/sql-editors)
 
 # More documentation
 
@@ -413,11 +413,11 @@ documentation, check out the [docs on
 DoltHub](https://docs.dolthub.com/). Some of the topics we didn't
 cover here:
 
-* [Querying past revisions of your
-  tables](https://docs.dolthub.com/interfaces/sql#querying-non-head-revisions-of-a-database)
-* [Selecting the diff between two
-  commits](https://docs.dolthub.com/interfaces/sql/dolt-system-tables#dolt_diff_usdtablename)
-* [Documentation for all CLI
+- [Querying past revisions of your
+  tables](https://docs.dolthub.com/reference/sql/querying-history)
+- [Selecting the diff between two
+  commits](https://docs.dolthub.com/reference/sql/dolt-system-tables#dolt_diff_usdtablename)
+- [Documentation for all CLI
   commands](https://docs.dolthub.com/reference/cli)
 
 # Credits and License

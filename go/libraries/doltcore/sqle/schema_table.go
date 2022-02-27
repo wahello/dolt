@@ -24,6 +24,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema/typeinfo"
+	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/index"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/sqlutil"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -159,7 +160,7 @@ func migrateOldSchemasTableToNew(
 		return nil, nil, err
 	}
 
-	rowData, err := table.GetRowData(ctx)
+	rowData, err := table.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,6 +194,34 @@ func migrateOldSchemasTableToNew(
 	return root, rowsToAdd, nil
 }
 
+func nextSchemasTableIndex(ctx *sql.Context, root *doltdb.RootValue) (int64, error) {
+	tbl, _, err := root.GetTable(ctx, doltdb.SchemasTableName)
+	if err != nil {
+		return 0, err
+	}
+
+	rows, err := tbl.GetNomsRowData(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	idx := int64(1)
+	if rows.Len() > 0 {
+		keyTpl, _, err := rows.Last(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if keyTpl != nil {
+			key, err := keyTpl.(types.Tuple).Get(1)
+			if err != nil {
+				return 0, err
+			}
+			idx = int64(key.(types.Int)) + 1
+		}
+	}
+	return idx, nil
+}
+
 // fragFromSchemasTable returns the row with the given schema fragment if it exists.
 func fragFromSchemasTable(ctx *sql.Context, tbl *WritableDoltTable, fragType string, name string) (sql.Row, bool, error) {
 	indexes, err := tbl.GetIndexes(ctx)
@@ -211,17 +240,23 @@ func fragFromSchemasTable(ctx *sql.Context, tbl *WritableDoltTable, fragType str
 	}
 
 	exprs := fragNameIndex.Expressions()
-	indexLookup, err := sql.NewIndexBuilder(ctx, fragNameIndex).Equals(ctx, exprs[0], fragType).Equals(ctx, exprs[1], name).Build(ctx)
+	lookup, err := sql.NewIndexBuilder(ctx, fragNameIndex).Equals(ctx, exprs[0], fragType).Equals(ctx, exprs[1], name).Build(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	dil := indexLookup.(*doltIndexLookup)
-	rowIter, err := dil.RowIter(ctx, dil.IndexRowData(), nil)
+
+	iter, err := index.RowIterForIndexLookup(ctx, lookup, nil)
 	if err != nil {
 		return nil, false, err
 	}
-	defer rowIter.Close(ctx)
-	sqlRow, err := rowIter.Next()
+
+	defer func() {
+		if cerr := iter.Close(ctx); cerr != nil {
+			err = cerr
+		}
+	}()
+
+	sqlRow, err := iter.Next(ctx)
 	if err == nil {
 		return sqlRow, true, nil
 	} else if err == io.EOF {
@@ -255,7 +290,7 @@ func getSchemaFragmentsOfType(ctx *sql.Context, tbl *doltdb.Table, fragmentType 
 		return nil, errDoltSchemasTableFormat
 	}
 
-	rowData, err := tbl.GetRowData(ctx)
+	rowData, err := tbl.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}

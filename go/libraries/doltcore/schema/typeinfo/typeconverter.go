@@ -20,9 +20,11 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/shopspring/decimal"
 	"gopkg.in/src-d/go-errors.v1"
 
+	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/json"
 	"github.com/dolthub/dolt/go/store/types"
 )
 
@@ -69,6 +71,12 @@ func GetTypeConverter(ctx context.Context, srcTi TypeInfo, destTi TypeInfo) (tc 
 		return intTypeConverter(ctx, src, destTi)
 	case *jsonType:
 		return jsonTypeConverter(ctx, src, destTi)
+	case *linestringType:
+		return linestringTypeConverter(ctx, src, destTi)
+	case *pointType:
+		return pointTypeConverter(ctx, src, destTi)
+	case *polygonType:
+		return polygonTypeConverter(ctx, src, destTi)
 	case *setType:
 		return setTypeConverter(ctx, src, destTi)
 	case *timeType:
@@ -123,10 +131,22 @@ func wrapConvertValueToNomsValue(
 			vInt = *(*string)(unsafe.Pointer(&val))
 		case types.Int:
 			vInt = int64(val)
+		case types.JSON:
+			var err error
+			vInt, err = json.NomsJSON(val).ToString(sql.NewEmptyContext())
+			if err != nil {
+				return nil, err
+			}
+		case types.Linestring:
+			vInt = ConvertTypesLinestringToSQLLinestring(val)
+		case types.Point:
+			vInt = ConvertTypesPointToSQLPoint(val)
+		case types.Polygon:
+			vInt = ConvertTypesPolygonToSQLPolygon(val)
 		case types.String:
 			vInt = string(val)
 		case types.Timestamp:
-			vInt = time.Time(val)
+			vInt = time.Time(val).UTC()
 		case types.UUID:
 			vInt = val.String()
 		case types.Uint:

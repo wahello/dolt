@@ -42,11 +42,11 @@ type FileFactory struct {
 }
 
 // CreateDB creates an local filesys backed database
-func (fact FileFactory) CreateDB(ctx context.Context, nbf *types.NomsBinFormat, urlObj *url.URL, params map[string]interface{}) (datas.Database, error) {
+func (fact FileFactory) CreateDB(ctx context.Context, nbf *types.NomsBinFormat, urlObj *url.URL, params map[string]interface{}) (datas.Database, types.ValueReadWriter, error) {
 	path, err := url.PathUnescape(urlObj.Path)
 
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	path = filepath.FromSlash(path)
@@ -54,16 +54,18 @@ func (fact FileFactory) CreateDB(ctx context.Context, nbf *types.NomsBinFormat, 
 
 	err = validateDir(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	//newGenSt, err := nbs.NewLocalStore(ctx, nbf.VersionString(), path, defaultMemTableSize)
 	boltCS, err := boltdb.NewBoltDBChunkStore(ctx, path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return datas.NewDatabase(boltCS), nil
+	vs := types.NewValueStore(boltCS)
+
+	return datas.NewTypesDatabase(vs), vs, nil
 }
 
 func validateDir(path string) error {

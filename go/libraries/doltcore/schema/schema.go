@@ -14,7 +14,14 @@
 
 package schema
 
-import "github.com/dolthub/dolt/go/store/types"
+import (
+	"strings"
+
+	"gopkg.in/src-d/go-errors.v1"
+
+	"github.com/dolthub/dolt/go/libraries/doltcore/schema/typeinfo"
+	"github.com/dolthub/dolt/go/store/types"
+)
 
 // Schema is an interface for retrieving the columns that make up a schema
 type Schema interface {
@@ -32,6 +39,12 @@ type Schema interface {
 
 	// Checks returns a collection of all check constraints on the table that this schema belongs to.
 	Checks() CheckCollection
+
+	// GetPkOrdinals returns a slice of the primary key ordering indexes relative to the schema column ordering
+	GetPkOrdinals() []int
+
+	// SetPkOrdinals specifies a primary key column ordering
+	SetPkOrdinals([]int) error
 }
 
 // ColFromTag returns a schema.Column from a schema and a tag
@@ -119,26 +132,26 @@ func VerifyInSchema(inSch, outSch Schema) (bool, error) {
 	return match, nil
 }
 
-// GetSharedCols returns a name -> tag mapping for name/kind matches
-func GetSharedCols(schema Schema, cmpNames []string, cmpKinds []types.NomsKind) map[string]uint64 {
-	existingColKinds := make(map[string]types.NomsKind)
-	existingColTags := make(map[string]uint64)
+// GetSharedCols return all columns in the schema that match the names and types given, which are parallel arrays
+// specifying columns to match.
+func GetSharedCols(schema Schema, cmpNames []string, cmpKinds []types.NomsKind) []Column {
+	existingCols := make(map[string]Column)
 
+	var shared []Column
 	_ = schema.GetAllCols().Iter(func(tag uint64, col Column) (stop bool, err error) {
-		existingColKinds[col.Name] = col.Kind
-		existingColTags[col.Name] = col.Tag
+		existingCols[col.Name] = col
 		return false, nil
 	})
 
-	reuseTags := make(map[string]uint64)
-	for i, col := range cmpNames {
-		if val, ok := existingColKinds[col]; ok {
-			if val == cmpKinds[i] {
-				reuseTags[col] = existingColTags[col]
+	for i, colName := range cmpNames {
+		if col, ok := existingCols[colName]; ok {
+			if col.Kind == cmpKinds[i] && strings.ToLower(col.Name) == strings.ToLower(cmpNames[i]) {
+				shared = append(shared, col)
 			}
 		}
 	}
-	return reuseTags
+
+	return shared
 }
 
 // ArePrimaryKeySetsDiffable checks if two schemas are diffable. Assumes the passed in schema are from the same table
@@ -173,5 +186,37 @@ func ArePrimaryKeySetsDiffable(fromSch, toSch Schema) bool {
 		}
 	}
 
+	ords1 := fromSch.GetPkOrdinals()
+	ords2 := toSch.GetPkOrdinals()
+	if ords1 == nil || ords2 == nil || len(ords1) != len(ords2) {
+		return false
+	}
+	for i := 0; i < len(ords1); i++ {
+		if ords1[i] != ords2[i] {
+			return false
+		}
+	}
+
 	return true
+}
+
+var ErrUsingSpatialKey = errors.NewKind("can't use Spatial Types as Primary Key for table %s")
+
+// IsColSpatialType is a utility function that checks if a single column is using a spatial type by comparing typeinfos
+func IsColSpatialType(c Column) bool {
+	return c.TypeInfo.Equals(typeinfo.PointType) ||
+		c.TypeInfo.Equals(typeinfo.LinestringType) ||
+		c.TypeInfo.Equals(typeinfo.PolygonType)
+}
+
+// IsUsingSpatialColAsKey is a utility function that checks for any spatial types being used as a primary key
+func IsUsingSpatialColAsKey(sch Schema) bool {
+	pkCols := sch.GetPKCols()
+	cols := pkCols.GetColumns()
+	for _, c := range cols {
+		if IsColSpatialType(c) {
+			return true
+		}
+	}
+	return false
 }

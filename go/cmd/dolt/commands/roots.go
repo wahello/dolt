@@ -68,7 +68,7 @@ func (cmd RootsCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
 	return nil
 }
 
-func (cmd RootsCmd) createArgParser() *argparser.ArgParser {
+func (cmd RootsCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.SupportsInt(numFilesParam, "n", "number", "Number of table files to scan.")
 	return ap
@@ -76,7 +76,7 @@ func (cmd RootsCmd) createArgParser() *argparser.ArgParser {
 
 // Exec executes the command
 func (cmd RootsCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, _ := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, cli.CommandDocumentationContent{}, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -116,9 +116,9 @@ func (cmd RootsCmd) processTableFile(ctx context.Context, path string, modified 
 	return nbs.IterChunks(rdCloser.(io.ReadSeeker), func(chunk chunks.Chunk) (stop bool, err error) {
 		//Want a clean db every loop
 		sp, _ := spec.ForDatabase("mem")
-		db := sp.GetDatabase(ctx)
+		vrw := sp.GetVRW(ctx)
 
-		value, err := types.DecodeValue(chunk, db)
+		value, err := types.DecodeValue(chunk, vrw)
 
 		if err != nil {
 			return false, err
@@ -200,6 +200,10 @@ func NewTableFileIter(dirs []string, fs filesys.Filesys) (*TableFileIter, error)
 }
 
 func (itr *TableFileIter) next() (string, time.Time) {
+	if itr.pos >= len(itr.files) {
+		return "", time.Time{}
+	}
+
 	curr := itr.files[itr.pos]
 	itr.pos++
 

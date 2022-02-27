@@ -72,11 +72,11 @@ func (cmd CloneCmd) RequiresRepo() bool {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd CloneCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, cloneDocs, ap))
 }
 
-func (cmd CloneCmd) createArgParser() *argparser.ArgParser {
+func (cmd CloneCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.SupportsString(remoteParam, "", "name", "Name of the remote to be added. Default will be 'origin'.")
 	ap.SupportsString(branchParam, "b", "branch", "The branch to be cloned.  If not specified all branches will be cloned.")
@@ -94,7 +94,7 @@ func (cmd CloneCmd) EventType() eventsapi.ClientEventType {
 
 // Exec executes the command
 func (cmd CloneCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, cloneDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -160,6 +160,19 @@ func clone(ctx context.Context, apr *argparser.ArgParseResults, dEnv *env.DoltEn
 		if u.Scheme != "" {
 			evt.SetAttribute(eventsapi.AttributeID_REMOTE_URL_SCHEME, u.Scheme)
 		}
+	}
+
+	err = dEnv.RepoStateWriter().UpdateBranch(dEnv.RepoState.CWBHeadRef().GetPath(), env.BranchConfig{
+		Merge:  dEnv.RepoState.Head,
+		Remote: remoteName,
+	})
+	if err != nil {
+		return errhand.VerboseErrorFromError(err)
+	}
+
+	err = dEnv.RepoState.Save(dEnv.FS)
+	if err != nil {
+		return errhand.VerboseErrorFromError(err)
 	}
 
 	return nil

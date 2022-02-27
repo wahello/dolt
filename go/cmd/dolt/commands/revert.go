@@ -18,13 +18,13 @@ import (
 	"context"
 	"io"
 
-	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
-
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/merge"
+	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
+	"github.com/dolthub/dolt/go/libraries/utils/argparser"
 )
 
 var revertDocs = cli.CommandDocumentationContent{
@@ -59,6 +59,10 @@ func (cmd RevertCmd) Description() string {
 func (cmd RevertCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
 	ap := cli.CreateRevertArgParser()
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, revertDocs, ap))
+}
+
+func (cmd RevertCmd) ArgParser() *argparser.ArgParser {
+	return cli.CreateRevertArgParser()
 }
 
 // Exec implements the interface cli.Command.

@@ -26,6 +26,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/dsess"
 	"github.com/dolthub/dolt/go/libraries/utils/config"
+	"github.com/dolthub/dolt/go/store/types"
 )
 
 func init() {
@@ -42,23 +43,13 @@ func TestSingleQuery(t *testing.T) {
 
 	var test enginetest.QueryTest
 	test = enginetest.QueryTest{
-		Query: `SELECT 
-					myTable.i, 
-					(SELECT 
-						dolt_commit_diff_mytable.diff_type 
-					FROM 
-						dolt_commit_diff_mytable
-					WHERE (
-						dolt_commit_diff_mytable.from_commit = 'abc' AND 
-						dolt_commit_diff_mytable.to_commit = 'abc' AND
-						dolt_commit_diff_mytable.to_i = myTable.i  -- extra filter clause
-					)) AS diff_type 
-				FROM myTable`,
+		Query:    `SELECT * from mytable`,
 		Expected: []sql.Row{},
 	}
 
 	harness := newDoltHarness(t)
 	engine := enginetest.NewEngine(t, harness)
+	enginetest.CreateIndexes(t, harness, engine)
 	engine.Analyzer.Debug = true
 	engine.Analyzer.Verbose = true
 
@@ -71,24 +62,20 @@ func TestSingleScript(t *testing.T) {
 
 	var scripts = []enginetest.ScriptTest{
 		{
-			Name: "CrossDB Queries",
+			Name: "insert into sparse auto_increment table",
 			SetUpScript: []string{
-				"CREATE DATABASE test",
-				"CREATE TABLE test.x (pk int primary key)",
-				"insert into test.x values (1),(2),(3)",
-				"DELETE FROM test.x WHERE pk=2",
-				"UPDATE test.x set pk=300 where pk=3",
-				"create table a (xa int primary key, ya int, za int)",
-				"insert into a values (1,2,3)",
+				"create table auto (pk int primary key auto_increment)",
+				"insert into auto values (10), (20), (30)",
+				"insert into auto values (NULL)",
+				"insert into auto values (40)",
+				"insert into auto values (0)",
 			},
 			Assertions: []enginetest.ScriptTestAssertion{
 				{
-					Query:    "SELECT pk from test.x",
-					Expected: []sql.Row{{1}, {300}},
-				},
-				{
-					Query:    "SELECT * from a",
-					Expected: []sql.Row{{1, 2, 3}},
+					Query: "select * from auto order by 1",
+					Expected: []sql.Row{
+						{10}, {20}, {30}, {31}, {40}, {41},
+					},
 				},
 			},
 		},
@@ -112,6 +99,11 @@ func TestVersionedQueries(t *testing.T) {
 // Tests of choosing the correct execution plan independent of result correctness. Mostly useful for confirming that
 // the right indexes are being used for joining tables.
 func TestQueryPlans(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		// todo(andy): unskip after secondary index support
+		t.Skip()
+	}
+
 	// Dolt supports partial keys, so the index matched is different for some plans
 	// TODO: Fix these differences by implementing partial key matching in the memory tables, or the engine itself
 	skipped := []string{
@@ -191,11 +183,16 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestScripts(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		// todo(andy): unskip
+		t.Skip()
+	}
+
 	skipped := []string{
 		"create index r_c0 on r (c0);",
 		// These rely on keyless tables which orders its rows by hash rather than contents, meaning changing types causes different ordering
-		"SELECT group_concat(attribute) FROM t where o_id=2",
-		"SELECT group_concat(o_id) FROM t WHERE attribute='color'",
+		"SELECT group_concat(`attribute`) FROM t where o_id=2",
+		"SELECT group_concat(o_id) FROM t WHERE `attribute`='color'",
 
 		// TODO(aaron): go-mysql-server GroupBy with grouping
 		// expressions currently has a bug where it does not insert
@@ -204,12 +201,31 @@ func TestScripts(t *testing.T) {
 		// but they no longer do.
 		"SELECT pk, SUM(DISTINCT v1), MAX(v1) FROM mytable GROUP BY pk ORDER BY pk",
 		"SELECT pk, MIN(DISTINCT v1), MAX(DISTINCT v1) FROM mytable GROUP BY pk ORDER BY pk",
+
+		// no support for naming unique constraints yet, engine dependent
+		"show create table t2",
 	}
 	enginetest.TestScripts(t, newDoltHarness(t).WithSkippedQueries(skipped))
 }
 
+func TestUserPrivileges(t *testing.T) {
+	enginetest.TestUserPrivileges(t, newDoltHarness(t))
+}
+
+func TestUserAuthentication(t *testing.T) {
+	enginetest.TestUserAuthentication(t, newDoltHarness(t))
+}
+
+func TestComplexIndexQueries(t *testing.T) {
+	enginetest.TestComplexIndexQueries(t, newDoltHarness(t))
+}
+
 func TestCreateTable(t *testing.T) {
 	enginetest.TestCreateTable(t, newDoltHarness(t))
+}
+
+func TestPkOrdinals(t *testing.T) {
+	enginetest.TestPkOrdinals(t, newDoltHarness(t))
 }
 
 func TestDropTable(t *testing.T) {
@@ -241,6 +257,7 @@ func TestCreateDatabase(t *testing.T) {
 }
 
 func TestDropDatabase(t *testing.T) {
+	t.Skip("Dolt doesn't yet support dropping the primary database, which these tests do")
 	enginetest.TestDropDatabase(t, newDoltHarness(t))
 }
 
@@ -289,6 +306,22 @@ func TestVersionedViews(t *testing.T) {
 	enginetest.TestVersionedViews(t, newDoltHarness(t))
 }
 
+func TestWindowFunctions(t *testing.T) {
+	enginetest.TestWindowFunctions(t, newDoltHarness(t))
+}
+
+func TestWindowRowFrames(t *testing.T) {
+	enginetest.TestWindowRowFrames(t, newDoltHarness(t))
+}
+
+func TestWindowRangeFrames(t *testing.T) {
+	enginetest.TestWindowRangeFrames(t, newDoltHarness(t))
+}
+
+func TestNamedWindows(t *testing.T) {
+	enginetest.TestNamedWindows(t, newDoltHarness(t))
+}
+
 func TestNaturalJoin(t *testing.T) {
 	enginetest.TestNaturalJoin(t, newDoltHarness(t))
 }
@@ -307,6 +340,10 @@ func TestInnerNestedInNaturalJoins(t *testing.T) {
 
 func TestColumnDefaults(t *testing.T) {
 	enginetest.TestColumnDefaults(t, newDoltHarness(t))
+}
+
+func TestAlterTable(t *testing.T) {
+	enginetest.TestAlterTable(t, newDoltHarness(t))
 }
 
 func TestVariables(t *testing.T) {
@@ -343,12 +380,34 @@ func TestTransactions(t *testing.T) {
 	for _, script := range DoltTransactionTests {
 		enginetest.TestTransactionScript(t, newDoltHarness(t), script)
 	}
+
+	for _, script := range DoltSqlFuncTransactionTests {
+		enginetest.TestTransactionScript(t, newDoltHarness(t), script)
+	}
 }
 
 func TestDoltScripts(t *testing.T) {
 	harness := newDoltHarness(t)
 	for _, script := range DoltScripts {
 		enginetest.TestScript(t, harness, script)
+	}
+}
+
+func TestDoltMerge(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, script := range DoltMerge {
+		enginetest.TestScript(t, harness, script)
+	}
+}
+
+func TestScopedDoltHistorySystemTables(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, test := range ScopedDoltHistoryScriptTests {
+		databases := harness.NewDatabases("mydb")
+		engine := enginetest.NewEngineWithDbs(t, harness, databases)
+		t.Run(test.Name, func(t *testing.T) {
+			enginetest.TestScriptWithEngine(t, engine, harness, test)
+		})
 	}
 }
 
@@ -442,12 +501,38 @@ func TestSystemTableQueries(t *testing.T) {
 	enginetest.RunQueryTests(t, newDoltHarness(t), BrokenSystemTableQueries)
 }
 
+func TestUnscopedDoltDiffSystemTable(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, test := range UnscopedDiffTableTests {
+		databases := harness.NewDatabases("mydb")
+		engine := enginetest.NewEngineWithDbs(t, harness, databases)
+		t.Run(test.Name, func(t *testing.T) {
+			enginetest.TestScriptWithEngine(t, engine, harness, test)
+		})
+	}
+}
+
+func TestDoltDiffSystemTable(t *testing.T) {
+	harness := newDoltHarness(t)
+	for _, test := range DiffTableTests {
+		databases := harness.NewDatabases("mydb")
+		engine := enginetest.NewEngineWithDbs(t, harness, databases)
+		t.Run(test.Name, func(t *testing.T) {
+			enginetest.TestScriptWithEngine(t, engine, harness, test)
+		})
+	}
+}
+
 func TestTestReadOnlyDatabases(t *testing.T) {
 	enginetest.TestReadOnlyDatabases(t, newDoltHarness(t))
 }
 
 func TestAddDropPks(t *testing.T) {
 	enginetest.TestAddDropPks(t, newDoltHarness(t))
+}
+
+func TestNullRanges(t *testing.T) {
+	enginetest.TestNullRanges(t, newDoltHarness(t))
 }
 
 func TestPersist(t *testing.T) {

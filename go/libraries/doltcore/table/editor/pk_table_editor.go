@@ -62,7 +62,7 @@ type TableEditor interface {
 	InsertRow(ctx context.Context, r row.Row, errFunc PKDuplicateErrFunc) error
 	UpdateRow(ctx context.Context, old, new row.Row, errFunc PKDuplicateErrFunc) error
 	DeleteRow(ctx context.Context, r row.Row) error
-	hasEdits() bool
+	HasEdits() bool
 
 	GetAutoIncrementValue() types.Value
 	SetAutoIncrementValue(v types.Value) (err error)
@@ -85,6 +85,19 @@ func NewTableEditor(ctx context.Context, t *doltdb.Table, tableSch schema.Schema
 		return newKeylessTableEditor(ctx, t, tableSch, name, opts)
 	}
 	return newPkTableEditor(ctx, t, tableSch, name, opts)
+}
+
+// Options are properties that define different functionality for the tableEditSession.
+type Options struct {
+	ForeignKeyChecksDisabled bool // If true, then ALL foreign key checks AND updates (through CASCADE, etc.) are skipped
+	Deaf                     DbEaFactory
+}
+
+func TestEditorOptions(vrw types.ValueReadWriter) Options {
+	return Options{
+		ForeignKeyChecksDisabled: false,
+		Deaf:                     NewInMemDeaf(vrw.Format()),
+	}
 }
 
 // pkTableEditor supports making multiple row edits (inserts, updates, deletes) to a table. It does error checking for key
@@ -131,14 +144,14 @@ func newPkTableEditor(ctx context.Context, t *doltdb.Table, tableSch schema.Sche
 		writeMutex: &sync.Mutex{},
 	}
 	var err error
-	rowData, err := t.GetRowData(ctx)
+	rowData, err := t.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}
 	te.tea = opts.Deaf.NewTableEA(ctx, rowData)
 
 	for i, index := range tableSch.Indexes().AllIndexes() {
-		indexData, err := t.GetIndexRowData(ctx, index.Name())
+		indexData, err := t.GetNomsIndexRowData(ctx, index.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +195,7 @@ func ContainsIndexedKey(ctx context.Context, te TableEditor, key types.Tuple, in
 		return false, err
 	}
 
-	idxMap, err := tbl.GetIndexRowData(ctx, indexName)
+	idxMap, err := tbl.GetNomsIndexRowData(ctx, indexName)
 	if err != nil {
 		return false, err
 	}
@@ -209,7 +222,7 @@ func GetIndexedRowKVPs(ctx context.Context, te TableEditor, key types.Tuple, ind
 		return nil, err
 	}
 
-	idxMap, err := tbl.GetIndexRowData(ctx, indexName)
+	idxMap, err := tbl.GetNomsIndexRowData(ctx, indexName)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +231,7 @@ func GetIndexedRowKVPs(ctx context.Context, te TableEditor, key types.Tuple, ind
 		[]*noms.ReadRange{{Start: key, Inclusive: true, Reverse: false, Check: noms.InRangeCheckPartial(key)}},
 	)
 
-	rowData, err := tbl.GetRowData(ctx)
+	rowData, err := tbl.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -645,20 +658,20 @@ func (te *pkTableEditor) SetAutoIncrementValue(v types.Value) (err error) {
 
 	te.setDirty(true)
 	te.autoIncVal = v
-	te.t, err = te.t.SetAutoIncrementValue(te.autoIncVal)
+	te.t, err = te.t.SetAutoIncrementValue(nil, te.autoIncVal)
 
 	return err
 }
 
 // Table returns a Table based on the edits given, if any. If Flush() was not called prior, it will be called here.
 func (te *pkTableEditor) Table(ctx context.Context) (*doltdb.Table, error) {
-	if !te.hasEdits() {
+	if !te.HasEdits() {
 		return te.t, nil
 	}
 
 	var err error
 	if te.hasAutoInc {
-		te.t, err = te.t.SetAutoIncrementValue(te.autoIncVal)
+		te.t, err = te.t.SetAutoIncrementValue(nil, te.autoIncVal)
 		if err != nil {
 			return nil, err
 		}
@@ -674,7 +687,7 @@ func (te *pkTableEditor) Table(ctx context.Context) (*doltdb.Table, error) {
 			return err
 		}
 
-		newTable, err := te.t.UpdateRows(ctx, updatedMap)
+		newTable, err := te.t.UpdateNomsRows(ctx, updatedMap)
 		if err != nil {
 			return err
 		}
@@ -704,7 +717,7 @@ func (te *pkTableEditor) Table(ctx context.Context) (*doltdb.Table, error) {
 				err = idxErr
 				return
 			}
-			tbl, idxErr = tbl.SetIndexRowData(ctx, te.indexEds[i].Index().Name(), indexMap)
+			tbl, idxErr = tbl.SetNomsIndexRows(ctx, te.indexEds[i].Index().Name(), indexMap)
 			if idxErr != nil {
 				err = idxErr
 				return
@@ -838,7 +851,7 @@ func (te *pkTableEditor) setDirty(dirty bool) {
 // write operations were eventually rolled back (such as through an error on StatementFinished), so it is still possible
 // for this to return true when the table editor does not actually contain any new edits. This is preferable to
 // potentially returning false when there are edits.
-func (te *pkTableEditor) hasEdits() bool {
+func (te *pkTableEditor) HasEdits() bool {
 	return atomic.LoadUint32(&te.dirty) != 0
 }
 

@@ -20,7 +20,9 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
+	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/index"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table"
 	"github.com/dolthub/dolt/go/libraries/utils/set"
 	"github.com/dolthub/dolt/go/store/types"
@@ -29,7 +31,7 @@ import (
 var _ sql.RowIter = (*keylessRowIter)(nil)
 
 type keylessRowIter struct {
-	keyedIter *DoltMapIter
+	keyedIter *index.DoltMapIter
 
 	cardIdx     int
 	nonCardCols int
@@ -38,9 +40,9 @@ type keylessRowIter struct {
 	lastCard uint64
 }
 
-func (k *keylessRowIter) Next() (sql.Row, error) {
+func (k *keylessRowIter) Next(ctx *sql.Context) (sql.Row, error) {
 	if k.lastCard == 0 {
-		r, err := k.keyedIter.Next()
+		r, err := k.keyedIter.Next(ctx)
 
 		if err != nil {
 			return nil, err
@@ -66,7 +68,7 @@ type doltTableRowIter struct {
 }
 
 // Returns a new row iterator for the table given
-func newRowIterator(ctx *sql.Context, tbl *doltdb.Table, projCols []string, partition *doltTablePartition) (sql.RowIter, error) {
+func newRowIterator(ctx context.Context, tbl *doltdb.Table, projCols []string, partition doltTablePartition) (sql.RowIter, error) {
 	sch, err := tbl.GetSchema(ctx)
 
 	if err != nil {
@@ -81,7 +83,7 @@ func newRowIterator(ctx *sql.Context, tbl *doltdb.Table, projCols []string, part
 	}
 }
 
-func newKeylessRowIterator(ctx *sql.Context, tbl *doltdb.Table, projectedCols []string, partition *doltTablePartition) (sql.RowIter, error) {
+func newKeylessRowIterator(ctx context.Context, tbl *doltdb.Table, projectedCols []string, partition doltTablePartition) (sql.RowIter, error) {
 	mapIter, err := iterForPartition(ctx, partition)
 	if err != nil {
 		return nil, err
@@ -99,8 +101,8 @@ func newKeylessRowIterator(ctx *sql.Context, tbl *doltdb.Table, projectedCols []
 	copy(colsCopy, cols)
 	colsCopy = append(colsCopy, schema.NewColumn("__cardinality__", schema.KeylessRowCardinalityTag, types.UintKind, false))
 
-	conv := NewKVToSqlRowConverter(tbl.Format(), tagToSqlColIdx, colsCopy, len(colsCopy))
-	keyedItr, err := NewDoltMapIter(ctx, mapIter.NextTuple, nil, conv), nil
+	conv := index.NewKVToSqlRowConverter(tbl.Format(), tagToSqlColIdx, colsCopy, len(colsCopy))
+	keyedItr, err := index.NewDoltMapIter(mapIter.NextTuple, nil, conv), nil
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +114,11 @@ func newKeylessRowIterator(ctx *sql.Context, tbl *doltdb.Table, projectedCols []
 	}, nil
 }
 
-func newKeyedRowIter(ctx context.Context, tbl *doltdb.Table, projectedCols []string, partition *doltTablePartition) (sql.RowIter, error) {
+func newKeyedRowIter(ctx context.Context, tbl *doltdb.Table, projectedCols []string, partition doltTablePartition) (sql.RowIter, error) {
+	if types.IsFormat_DOLT_1(tbl.Format()) {
+		return ProllyRowIterFromPartition(ctx, tbl, projectedCols, partition)
+	}
+
 	mapIter, err := iterForPartition(ctx, partition)
 	if err != nil {
 		return nil, err
@@ -123,17 +129,15 @@ func newKeyedRowIter(ctx context.Context, tbl *doltdb.Table, projectedCols []str
 		return nil, err
 	}
 
-	conv := NewKVToSqlRowConverter(tbl.Format(), tagToSqlColIdx, cols, len(cols))
-	return NewDoltMapIter(ctx, mapIter.NextTuple, nil, conv), nil
+	conv := index.NewKVToSqlRowConverter(tbl.Format(), tagToSqlColIdx, cols, len(cols))
+	return index.NewDoltMapIter(mapIter.NextTuple, nil, conv), nil
 }
 
-func iterForPartition(ctx context.Context, partition *doltTablePartition) (types.MapTupleIterator, error) {
-	rowData := partition.rowData
+func iterForPartition(ctx context.Context, partition doltTablePartition) (types.MapTupleIterator, error) {
 	if partition.end == NoUpperBound {
-		return rowData.RangeIterator(ctx, 0, rowData.Len())
-	} else {
-		return partition.IteratorForPartition(ctx, rowData)
+		partition.end = partition.rowData.Count()
 	}
+	return partition.IteratorForPartition(ctx, partition.rowData)
 }
 
 func getTagToResColIdx(ctx context.Context, tbl *doltdb.Table, projectedCols []string) ([]schema.Column, map[uint64]int, error) {
@@ -162,4 +166,28 @@ func (itr *doltTableRowIter) Next() (sql.Row, error) {
 // Close required by sql.RowIter interface
 func (itr *doltTableRowIter) Close(*sql.Context) error {
 	return nil
+}
+
+func ProllyRowIterFromPartition(ctx context.Context, tbl *doltdb.Table, projections []string, partition doltTablePartition) (sql.RowIter, error) {
+	rows := durable.ProllyMapFromIndex(partition.rowData)
+	sch, err := tbl.GetSchema(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.NewProllyRowIter(ctx, sch, rows, partition.rowRange, projections)
+}
+
+// Returns a |sql.RowIter| for a full table scan for the given |table|. If
+// |columns| is not empty, only columns with names appearing in |columns| will
+// have non-|nil| values in the resulting |sql.Row|s. If |columns| is empty,
+// values for all columns in the table are populated in each returned Row. The
+// returned rows always have the schema of the table, regardless of the value
+// of |columns|.  Providing a column name which does not appear in the schema
+// is not an error, but no corresponding column will appear in the results.
+func TableToRowIter(ctx context.Context, table *doltdb.Table, columns []string) (sql.RowIter, error) {
+	data, err := table.GetRowData(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return newRowIterator(ctx, table, columns, doltTablePartition{rowData: data, end: NoUpperBound})
 }

@@ -16,7 +16,6 @@ package editor
 
 import (
 	"context"
-
 	"fmt"
 	"sync"
 
@@ -278,7 +277,7 @@ func RebuildIndex(ctx context.Context, tbl *doltdb.Table, indexName string, opts
 		return types.EmptyMap, err
 	}
 
-	tableRowData, err := tbl.GetRowData(ctx)
+	tableRowData, err := tbl.GetNomsRowData(ctx)
 	if err != nil {
 		return types.EmptyMap, err
 	}
@@ -305,12 +304,12 @@ func RebuildAllIndexes(ctx context.Context, t *doltdb.Table, opts Options) (*dol
 		return t, nil
 	}
 
-	tableRowData, err := t.GetRowData(ctx)
+	tableRowData, err := t.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	indexesMap, err := t.GetIndexData(ctx)
+	indexes, err := t.GetIndexSet(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -320,17 +319,14 @@ func RebuildAllIndexes(ctx context.Context, t *doltdb.Table, opts Options) (*dol
 		if err != nil {
 			return nil, err
 		}
-		rebuiltIndexRowDataRef, err := doltdb.WriteValAndGetRef(ctx, t.ValueReadWriter(), rebuiltIndexRowData)
-		if err != nil {
-			return nil, err
-		}
-		indexesMap, err = indexesMap.Edit().Set(types.String(index.Name()), rebuiltIndexRowDataRef).Map(ctx)
+
+		indexes, err = indexes.PutNomsIndex(ctx, index.Name(), rebuiltIndexRowData)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return t.SetIndexData(ctx, indexesMap)
+	return t.SetIndexSet(ctx, indexes)
 }
 
 func rebuildIndexRowData(ctx context.Context, vrw types.ValueReadWriter, sch schema.Schema, tblRowData types.Map, index schema.Index, opts Options) (types.Map, error) {

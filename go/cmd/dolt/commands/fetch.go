@@ -25,6 +25,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
 	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
+	"github.com/dolthub/dolt/go/libraries/utils/argparser"
 )
 
 var fetchDocs = cli.CommandDocumentationContent{
@@ -64,6 +65,10 @@ func (cmd FetchCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, fetchDocs, ap))
 }
 
+func (cmd FetchCmd) ArgParser() *argparser.ArgParser {
+	return cli.CreateFetchArgParser()
+}
+
 // Exec executes the command
 func (cmd FetchCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
 	ap := cli.CreateFetchArgParser()
@@ -76,7 +81,7 @@ func (cmd FetchCmd) Exec(ctx context.Context, commandStr string, args []string, 
 	}
 	updateMode := ref.UpdateMode{Force: apr.Contains(cli.ForceFlag)}
 
-	err = actions.FetchRefSpecs(ctx, dEnv.DbData(), refSpecs, r, updateMode, runProgFuncs, stopProgFuncs)
+	err = actions.FetchRefSpecs(ctx, dEnv.DbData(), refSpecs, r, updateMode, buildProgStarter(downloadLanguage), stopProgFuncs)
 	switch err {
 	case doltdb.ErrUpToDate:
 		return HandleVErrAndExitCode(nil, usage)

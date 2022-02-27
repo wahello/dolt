@@ -24,10 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/dtestutils"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema/encoding"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/sqlfmt"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -44,7 +44,7 @@ func TestEndToEnd(t *testing.T) {
 	id := uuid.MustParse("00000000-0000-0000-0000-000000000000")
 	tableName := "people"
 
-	dropCreateStatement := sqlfmt.DropTableIfExistsStmt(tableName) + "\nCREATE TABLE `people` (\n  `id` char(36) character set ascii collate ascii_bin NOT NULL,\n  `name` varchar(16383) NOT NULL,\n  `age` bigint unsigned NOT NULL,\n  `is_married` bit(1) NOT NULL,\n  `title` varchar(16383),\n  PRIMARY KEY (`id`),\n  KEY `idx_name` (`name`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+	dropCreateStatement := sqlfmt.DropTableIfExistsStmt(tableName) + "\nCREATE TABLE `people` (\n  `id` char(36) character set ascii collate ascii_bin NOT NULL,\n  `name` varchar(16383) NOT NULL,\n  `age` bigint unsigned NOT NULL,\n  `is_married` bit(1) NOT NULL,\n  `title` varchar(16383),\n  PRIMARY KEY (`id`),\n  KEY `idx_name` (`name`),\n  CONSTRAINT `test-check` CHECK ((`age` < 123))\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
 
 	type test struct {
 		name           string
@@ -80,15 +80,14 @@ func TestEndToEnd(t *testing.T) {
 			root, err := dEnv.WorkingRoot(ctx)
 			require.NoError(t, err)
 
-			schVal, err := encoding.MarshalSchemaAsNomsValue(ctx, root.VRW(), tt.sch)
-			require.NoError(t, err)
 			empty, err := types.NewMap(ctx, root.VRW())
 			require.NoError(t, err)
-			idxRef, err := types.NewRef(empty, root.VRW().Format())
+
+			indexes := durable.NewIndexSet(ctx, root.VRW())
+			indexes, err = indexes.PutNomsIndex(ctx, dtestutils.IndexName, empty)
 			require.NoError(t, err)
-			idxMap, err := types.NewMap(ctx, root.VRW(), types.String(dtestutils.IndexName), idxRef)
-			require.NoError(t, err)
-			tbl, err := doltdb.NewTable(ctx, root.VRW(), schVal, empty, idxMap, nil)
+
+			tbl, err := doltdb.NewNomsTable(ctx, root.VRW(), tt.sch, empty, indexes, nil)
 			require.NoError(t, err)
 			root, err = root.PutTable(ctx, tableName, tbl)
 			require.NoError(t, err)

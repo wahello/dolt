@@ -55,8 +55,8 @@ var ErrCannotCreateReplicaRevisionDbForCommit = errors.New("cannot create replic
 
 var EmptyReadReplica = ReadReplicaDatabase{}
 
-func NewReadReplicaDatabase(ctx context.Context, db Database, remoteName string, rsr env.RepoStateReader, tmpDir string) (ReadReplicaDatabase, error) {
-	remotes, err := rsr.GetRemotes()
+func NewReadReplicaDatabase(ctx context.Context, db Database, remoteName string, dEnv *env.DoltEnv) (ReadReplicaDatabase, error) {
+	remotes, err := dEnv.GetRemotes()
 	if err != nil {
 		return EmptyReadReplica, err
 	}
@@ -74,9 +74,9 @@ func NewReadReplicaDatabase(ctx context.Context, db Database, remoteName string,
 	return ReadReplicaDatabase{
 		Database: db,
 		remote:   remote,
-		tmpDir:   tmpDir,
+		tmpDir:   dEnv.TempTableFilesDir(),
 		srcDB:    srcDB,
-		headRef:  rsr.CWBHeadRef(),
+		headRef:  dEnv.RepoStateReader().CWBHeadRef(),
 	}, nil
 }
 
@@ -108,7 +108,7 @@ func (rrd ReadReplicaDatabase) PullFromRemote(ctx context.Context) error {
 	}
 
 	switch {
-	case headsArg != "" && allHeads == int8(1):
+	case headsArg != "" && allHeads == SysVarTrue:
 		return fmt.Errorf("%w; cannot set both 'dolt_replicate_heads' and 'dolt_replicate_all_heads'", ErrInvalidReplicateHeadsSetting)
 	case headsArg != "":
 		heads, ok := headsArg.(string)
@@ -116,7 +116,11 @@ func (rrd ReadReplicaDatabase) PullFromRemote(ctx context.Context) error {
 			return sql.ErrInvalidSystemVariableValue.New(ReplicateHeadsKey)
 		}
 		branches := parseBranches(heads)
-		err := pullBranches(ctx, rrd, branches)
+		err := rrd.srcDB.Rebase(ctx)
+		if err != nil {
+			return err
+		}
+		err = pullBranches(ctx, rrd, branches)
 		if err != nil {
 			return err
 		}
@@ -152,11 +156,6 @@ func (rrd ReadReplicaDatabase) SetHeadRef(head ref.DoltRef) (ReadReplicaDatabase
 }
 
 func pullBranches(ctx context.Context, rrd ReadReplicaDatabase, branches []string) error {
-	err := rrd.srcDB.Rebase(ctx)
-	if err != nil {
-		return err
-	}
-
 	refSpecs, err := env.ParseRSFromArgs(rrd.remote.Name, branches)
 	if err != nil {
 		return err

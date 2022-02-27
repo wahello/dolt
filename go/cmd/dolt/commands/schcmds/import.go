@@ -30,11 +30,11 @@ import (
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
 	eventsapi "github.com/dolthub/dolt/go/gen/proto/dolt/services/eventsapi/v1alpha1"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
 	"github.com/dolthub/dolt/go/libraries/doltcore/rowconv"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema/encoding"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/untyped/csv"
@@ -68,7 +68,7 @@ where source_field_name is the name of a field in the file being imported and de
 `
 
 var schImportDocs = cli.CommandDocumentationContent{
-	ShortDesc: "Creates a new table with an inferred schema.",
+	ShortDesc: "Creates or updates a table by inferring a schema from a file containing sample data.",
 	LongDesc: `If {{.EmphasisLeft}}--create | -c{{.EmphasisRight}} is given the operation will create {{.LessThan}}table{{.GreaterThan}} with a schema that it infers from the supplied file. One or more primary key columns must be specified using the {{.EmphasisLeft}}--pks{{.EmphasisRight}} parameter.
 
 If {{.EmphasisLeft}}--update | -u{{.EmphasisRight}} is given the operation will update {{.LessThan}}table{{.GreaterThan}} any additional columns, or change the types of columns based on the file supplied.  If the {{.EmphasisLeft}}--keep-types{{.EmphasisRight}} parameter is supplied then the types for existing columns will not be modified, even if they differ from what is in the supplied file.
@@ -79,7 +79,7 @@ A mapping file can be used to map fields between the file being imported and the
 
 ` + MappingFileHelp + `
 
-In create, update, and replace scenarios the file's extension is used to infer the type of the file.  If a file does not have the expected extension then the {{.EmphasisLeft}}--file-type{{.EmphasisRight}} parameter should be used to explicitly define the format of the file in one of the supported formats (Currently only csv is supported).  For files separated by a delimiter other than a ',', the --delim parameter can be used to specify a delimeter.
+In create, update, and replace scenarios the file's extension is used to infer the type of the file.  If a file does not have the expected extension then the {{.EmphasisLeft}}--file-type{{.EmphasisRight}} parameter should be used to explicitly define the format of the file in one of the supported formats (Currently only csv is supported).  For files separated by a delimiter other than a ',', the --delim parameter can be used to specify a delimiter.
 
 If the parameter {{.EmphasisLeft}}--dry-run{{.EmphasisRight}} is supplied a sql statement will be generated showing what would be executed if this were run without the --dry-run flag
 
@@ -138,11 +138,11 @@ func (cmd ImportCmd) EventType() eventsapi.ClientEventType {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd ImportCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return commands.CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, schImportDocs, ap))
 }
 
-func (cmd ImportCmd) createArgParser() *argparser.ArgParser {
+func (cmd ImportCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"table", "Name of the table to be created."})
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"file", "The file being used to infer the schema."})
@@ -162,7 +162,7 @@ func (cmd ImportCmd) createArgParser() *argparser.ArgParser {
 // Exec implements the import schema command that will take a file and infer it's schema, and then create a table matching that schema.
 // Exec executes the command
 func (cmd ImportCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, schImportDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -285,6 +285,7 @@ func importSchema(ctx context.Context, dEnv *env.DoltEnv, apr *argparser.ArgPars
 	// inferred schemas have no foreign keys
 	sqlDb := sqle.NewSingleTableDatabase(tblName, sch, nil, nil)
 	sqlCtx, engine, _ := sqle.PrepareCreateTableStmt(ctx, sqlDb)
+
 	stmt, err := sqle.GetCreateTableStmt(sqlCtx, engine, tblName)
 	if err != nil {
 		return errhand.VerboseErrorFromError(err)
@@ -297,25 +298,20 @@ func importSchema(ctx context.Context, dEnv *env.DoltEnv, apr *argparser.ArgPars
 			return errhand.BuildDError("error: failed to get table.").AddCause(err).Build()
 		}
 
-		schVal, err := encoding.MarshalSchemaAsNomsValue(context.Background(), root.VRW(), sch)
-		if err != nil {
-			return errhand.BuildDError("error: failed to encode schema.").AddCause(err).Build()
-		}
-
 		empty, err := types.NewMap(ctx, root.VRW())
 		if err != nil {
 			return errhand.BuildDError("error: failed to create table.").AddCause(err).Build()
 		}
 
-		indexData := empty
+		var indexSet durable.IndexSet
 		if tblExists {
-			indexData, err = tbl.GetIndexData(ctx)
+			indexSet, err = tbl.GetIndexSet(ctx)
 			if err != nil {
 				return errhand.BuildDError("error: failed to create table.").AddCause(err).Build()
 			}
 		}
 
-		tbl, err = doltdb.NewTable(ctx, root.VRW(), schVal, empty, indexData, nil)
+		tbl, err = doltdb.NewNomsTable(ctx, root.VRW(), sch, empty, indexSet, nil)
 		if err != nil {
 			return errhand.BuildDError("error: failed to create table.").AddCause(err).Build()
 		}

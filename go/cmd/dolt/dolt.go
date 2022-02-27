@@ -16,12 +16,16 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
+	"math/rand"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -50,10 +54,11 @@ import (
 )
 
 const (
-	Version = "0.34.0"
+	Version = "0.37.1"
 )
 
 var dumpDocsCommand = &commands.DumpDocsCmd{}
+var dumpZshCommand = &commands.GenZshCompCmd{}
 var doltCommand = cli.NewSubCommandHandler("dolt", "it's git for data", []cli.Command{
 	commands.InitCmd{},
 	commands.StatusCmd{},
@@ -86,7 +91,6 @@ var doltCommand = cli.NewSubCommandHandler("dolt", "it's git for data", []cli.Co
 	commands.BlameCmd{},
 	cvcmds.Commands,
 	commands.SendMetricsCmd{},
-	dumpDocsCommand,
 	commands.MigrateCmd{},
 	indexcmds.Commands,
 	commands.ReadTablesCmd{},
@@ -96,10 +100,14 @@ var doltCommand = cli.NewSubCommandHandler("dolt", "it's git for data", []cli.Co
 	commands.RootsCmd{},
 	commands.VersionCmd{VersionStr: Version},
 	commands.DumpCmd{},
+	commands.InspectCmd{},
+	dumpDocsCommand,
+	dumpZshCommand,
 })
 
 func init() {
 	dumpDocsCommand.DoltCommand = doltCommand
+	dumpZshCommand.DoltCommand = doltCommand
 	dfunctions.VersionString = Version
 }
 
@@ -109,6 +117,9 @@ const jaegerFlag = "--jaeger"
 const profFlag = "--prof"
 const csMetricsFlag = "--csmetrics"
 const stdInFlag = "--stdin"
+const stdOutFlag = "--stdout"
+const stdErrFlag = "--stderr"
+const stdOutAndErrFlag = "--out-and-err"
 const cpuProf = "cpu"
 const memProf = "mem"
 const blockingProf = "blocking"
@@ -126,7 +137,7 @@ func runMain() int {
 	csMetrics := false
 	if len(args) > 0 {
 		var doneDebugFlags bool
-		for !doneDebugFlags {
+		for !doneDebugFlags && len(args) > 0 {
 			switch args[0] {
 			case profFlag:
 				switch args[1] {
@@ -215,12 +226,37 @@ func runMain() int {
 				cli.Println("Using file contents as stdin:", stdInFile)
 
 				f, err := os.Open(stdInFile)
-
 				if err != nil {
-					panic(err)
+					cli.PrintErrln("Failed to open", stdInFile, err.Error())
+					return 1
 				}
 
 				os.Stdin = f
+				args = args[2:]
+
+			case stdOutFlag, stdErrFlag, stdOutAndErrFlag:
+				filename := args[1]
+
+				f, err := os.OpenFile(filename, os.O_TRUNC|os.O_WRONLY|os.O_CREATE, os.ModePerm)
+				if err != nil {
+					cli.PrintErrln("Failed to open", filename, "for writing:", err.Error())
+					return 1
+				}
+
+				switch args[0] {
+				case stdOutFlag:
+					cli.Println("Stdout being written to", filename)
+					cli.CliOut = f
+				case stdErrFlag:
+					cli.Println("Stderr being written to", filename)
+					cli.CliErr = f
+				case stdOutAndErrFlag:
+					cli.Println("Stdout and Stderr being written to", filename)
+					cli.CliOut = f
+					cli.CliErr = f
+				}
+
+				color.NoColor = true
 				args = args[2:]
 
 			case csMetricsFlag:
@@ -241,6 +277,8 @@ func runMain() int {
 		}
 	}
 
+	seedGlobalRand()
+
 	restoreIO := cli.InitIO()
 	defer restoreIO()
 
@@ -248,12 +286,6 @@ func runMain() int {
 
 	ctx := context.Background()
 	dEnv := env.Load(ctx, env.GetCurrentUserHomeDir, filesys.LocalFS, doltdb.LocalDirDoltDB, Version)
-
-	if dEnv.DBLoadError == nil && commandNeedsMigrationCheck(args) {
-		if commands.MigrationNeeded(ctx, dEnv, args) {
-			return 1
-		}
-	}
 
 	root, err := env.GetCurrentUserHomeDir()
 	if err != nil {
@@ -304,16 +336,17 @@ func runMain() int {
 
 	defer tempfiles.MovableTempFileProvider.Clean()
 
-	if dEnv.DoltDB != nil {
-		err := dsess.InitPersistedSystemVars(dEnv)
-		if err != nil {
-			cli.Printf("error: failed to load persisted global variables: %s\n", err.Error())
-		}
-		dEnv.DoltDB.SetCommitHookLogger(ctx, cli.OutStream)
+	err = dsess.InitPersistedSystemVars(dEnv)
+	if err != nil {
+		cli.Printf("error: failed to load persisted global variables: %s\n", err.Error())
 	}
 
 	start := time.Now()
+	var wg sync.WaitGroup
+	ctx, stop := context.WithCancel(ctx)
 	res := doltCommand.Exec(ctx, "dolt", args, dEnv)
+	stop()
+	wg.Wait()
 
 	if csMetrics && dEnv.DoltDB != nil {
 		metricsSummary := dEnv.DoltDB.CSMetricsSummary()
@@ -322,6 +355,15 @@ func runMain() int {
 	}
 
 	return res
+}
+
+func seedGlobalRand() {
+	bs := make([]byte, 8)
+	_, err := crand.Read(bs)
+	if err != nil {
+		panic("failed to initial rand " + err.Error())
+	}
+	rand.Seed(int64(binary.LittleEndian.Uint64(bs)))
 }
 
 // These subcommands cannot be performed if a migration is needed

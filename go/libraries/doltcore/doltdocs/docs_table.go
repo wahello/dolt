@@ -22,15 +22,13 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema/encoding"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table"
-	"github.com/dolthub/dolt/go/libraries/doltcore/table/typed/noms"
 	"github.com/dolthub/dolt/go/store/types"
 )
 
 // updateDocsTable takes in docTbl param and updates it with the value in docs. It returns the updated table.
 func updateDocsTable(ctx context.Context, docTbl *doltdb.Table, docs Docs) (*doltdb.Table, error) {
-	m, err := docTbl.GetRowData(ctx)
+	m, err := docTbl.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -74,67 +72,59 @@ func updateDocsTable(ctx context.Context, docTbl *doltdb.Table, docs Docs) (*dol
 		return nil, ErrEmptyDocsTable
 	}
 
-	docTbl, err = docTbl.UpdateRows(ctx, updatedMap)
+	docTbl, err = docTbl.UpdateNomsRows(ctx, updatedMap)
 
 	return docTbl, err
 }
 
 // createDocsTable creates a new in memory table that stores the given doc details.
 func createDocsTable(ctx context.Context, vrw types.ValueReadWriter, docs Docs) (*doltdb.Table, error) {
-	imt := table.NewInMemTable(Schema)
+
+	rows := make([]row.Row, 0, len(docs))
 
 	// Determines if the table needs to be created at all and initializes a schema if it does.
-	createTable := false
 	for _, doc := range docs {
+
 		if doc.Text != nil {
-			createTable = true
 			docTaggedVals := row.TaggedValues{
 				schema.DocNameTag: types.String(doc.DocPk),
 				schema.DocTextTag: types.String(doc.Text),
 			}
 
-			docRow, err := row.New(types.Format_Default, Schema, docTaggedVals)
+			r, err := row.New(types.Format_Default, DocsSchema, docTaggedVals)
 			if err != nil {
 				return nil, err
 			}
-			err = imt.AppendRow(docRow)
-			if err != nil {
-				return nil, err
-			}
+			rows = append(rows, r)
 		}
 	}
 
-	if createTable {
-		rd := table.NewInMemTableReader(imt)
-		wr := noms.NewNomsMapCreator(context.Background(), vrw, Schema)
-
-		_, _, err := table.PipeRows(context.Background(), rd, wr, false)
-		if err != nil {
-			return nil, err
-		}
-		rd.Close(context.Background())
-		wr.Close(context.Background())
-
-		schVal, err := encoding.MarshalSchemaAsNomsValue(ctx, vrw, wr.GetSchema())
-
-		if err != nil {
-			return nil, ErrMarshallingSchema
-		}
-
-		empty, err := types.NewMap(ctx, vrw)
-		if err != nil {
-			return nil, err
-		}
-
-		newDocsTbl, err := doltdb.NewTable(ctx, vrw, schVal, wr.GetMap(), empty, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		return newDocsTbl, nil
+	if len(rows) == 0 {
+		return nil, nil
 	}
 
-	return nil, nil
+	empty, err := types.NewMap(ctx, vrw)
+	if err != nil {
+		return nil, err
+	}
+
+	me := empty.Edit()
+	for _, r := range rows {
+		k, v := r.NomsMapKey(DocsSchema), r.NomsMapValue(DocsSchema)
+		me.Set(k, v)
+	}
+
+	rowMap, err := me.Map(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	newDocsTbl, err := doltdb.NewNomsTable(ctx, vrw, DocsSchema, rowMap, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return newDocsTbl, nil
 }
 
 // CreateOrUpdateDocsTable takes a root value and a set of docs and either creates the docs table or updates it with docs.
@@ -180,7 +170,7 @@ func getDocTextFromTbl(ctx context.Context, tbl *doltdb.Table, sch *schema.Schem
 
 // getDocRow returns the associated row of a particular doc from the docTbl given.
 func getDocRow(ctx context.Context, docTbl *doltdb.Table, sch schema.Schema, key types.Tuple) (r row.Row, ok bool, err error) {
-	rowMap, err := docTbl.GetRowData(ctx)
+	rowMap, err := docTbl.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -252,7 +242,7 @@ func getDocsFromTable(ctx context.Context, table *doltdb.Table) (Docs, error) {
 		return nil, err
 	}
 
-	rows, err := table.GetRowData(ctx)
+	rows, err := table.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, err
 	}

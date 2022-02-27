@@ -369,11 +369,46 @@ func TestAddColumn(t *testing.T) {
 		expectedErr    string
 	}{
 		{
-			name:  "alter add column",
+			name:  "alter add string column no default",
 			query: "alter table people add (newColumn varchar(80))",
 			expectedSchema: dtestutils.AddColumnToSchema(PeopleTestSchema,
 				schemaNewColumn(t, "newColumn", 4208, sql.MustCreateStringWithDefaults(sqltypes.VarChar, 80), false)),
 			expectedRows: dtestutils.AddColToRows(t, AllPeopleRows, 4208, nil),
+		},
+		{
+			name:  "alter add float column without default",
+			query: "alter table people add (newColumn float)",
+			expectedSchema: dtestutils.AddColumnToSchema(PeopleTestSchema,
+				schemaNewColumn(t, "newColumn", 4208, sql.Float32, false)),
+			expectedRows: dtestutils.AddColToRows(t, AllPeopleRows, 4208, nil),
+		},
+		{
+			name:  "alter add uint column without default",
+			query: "alter table people add (newColumn bigint unsigned)",
+			expectedSchema: dtestutils.AddColumnToSchema(PeopleTestSchema,
+				schemaNewColumn(t, "newColumn", 4208, sql.Uint64, false)),
+			expectedRows: dtestutils.AddColToRows(t, AllPeopleRows, 4208, nil),
+		},
+		{
+			name:  "alter add int column default",
+			query: "alter table people add (newColumn int default 2)",
+			expectedSchema: dtestutils.AddColumnToSchema(PeopleTestSchema,
+				schemaNewColumnWDefVal(t, "newColumn", 4435, sql.Int32, false, "2")),
+			expectedRows: dtestutils.AddColToRows(t, AllPeopleRows, 4435, types.Int(int32(2))),
+		},
+		{
+			name:  "alter add uint column default",
+			query: "alter table people add (newColumn bigint unsigned default 20)",
+			expectedSchema: dtestutils.AddColumnToSchema(PeopleTestSchema,
+				schemaNewColumnWDefVal(t, "newColumn", 6535, sql.Uint64, false, "20")),
+			expectedRows: dtestutils.AddColToRows(t, AllPeopleRows, 6535, types.Uint(uint64(20))),
+		},
+		{
+			name:  "alter add string column with default",
+			query: "alter table people add (newColumn varchar(80) default 'hi')",
+			expectedSchema: dtestutils.AddColumnToSchema(PeopleTestSchema,
+				schemaNewColumnWDefVal(t, "newColumn", 4208, sql.MustCreateStringWithDefaults(sqltypes.VarChar, 80), false, `"hi"`)),
+			expectedRows: dtestutils.AddColToRows(t, AllPeopleRows, 4208, types.String("hi")),
 		},
 		{
 			name:  "alter add column first",
@@ -464,6 +499,11 @@ func TestAddColumn(t *testing.T) {
 				schemaNewColumn(t, "newColumn", 4208, sql.MustCreateStringWithDefaults(sqltypes.VarChar, 80), false)),
 			expectedRows: AllPeopleRows,
 		},
+		{
+			name:        "alter table add column name clash",
+			query:       "alter table people add column(age int)",
+			expectedErr: `Column "age" already exists`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -494,7 +534,7 @@ func TestAddColumn(t *testing.T) {
 			assert.NoError(t, err)
 			require.True(t, ok)
 
-			rowData, err := updatedTable.GetRowData(ctx)
+			rowData, err := updatedTable.GetNomsRowData(ctx)
 			assert.NoError(t, err)
 			var foundRows []row.Row
 			err = rowData.Iter(ctx, func(key, value types.Value) (stop bool, err error) {
@@ -648,7 +688,7 @@ func TestModifyAndChangeColumn(t *testing.T) {
 			assert.NoError(t, err)
 			require.True(t, ok)
 
-			rowData, err := updatedTable.GetRowData(ctx)
+			rowData, err := updatedTable.GetNomsRowData(ctx)
 			assert.NoError(t, err)
 			var foundRows []row.Row
 			err = rowData.Iter(ctx, func(key, value types.Value) (stop bool, err error) {
@@ -813,7 +853,7 @@ func TestModifyColumnType(t *testing.T) {
 			require.NoError(t, err)
 			sch, err := table.GetSchema(ctx)
 			require.NoError(t, err)
-			rowData, err := table.GetRowData(ctx)
+			rowData, err := table.GetNomsRowData(ctx)
 			require.NoError(t, err)
 
 			var foundRows [][]types.Value
@@ -833,7 +873,7 @@ func TestModifyColumnType(t *testing.T) {
 
 			foundRows = nil
 			idx := sch.Indexes().AllIndexes()[0]
-			idxRowData, err := table.GetIndexRowData(ctx, idx.Name())
+			idxRowData, err := table.GetNomsIndexRowData(ctx, idx.Name())
 			require.NoError(t, err)
 			err = idxRowData.Iter(ctx, func(key, value types.Value) (stop bool, err error) {
 				r, err := row.FromNoms(idx.Schema(), key.(types.Tuple), value.(types.Tuple))
@@ -917,7 +957,7 @@ func TestDropColumn(t *testing.T) {
 			assert.NoError(t, err)
 			require.True(t, ok)
 
-			rowData, err := updatedTable.GetRowData(ctx)
+			rowData, err := updatedTable.GetNomsRowData(ctx)
 			assert.NoError(t, err)
 			var foundRows []row.Row
 			err = rowData.Iter(ctx, func(key, value types.Value) (stop bool, err error) {
@@ -1000,8 +1040,8 @@ func TestRenameColumn(t *testing.T) {
 		},
 		{
 			name:        "column name collision",
-			query:       "alter table people rename column id to age",
-			expectedErr: "A column with the name age already exists",
+			query:       "alter table people rename column id to AGE",
+			expectedErr: "Column \"AGE\" already exists",
 		},
 	}
 
@@ -1033,7 +1073,7 @@ func TestRenameColumn(t *testing.T) {
 			assert.NoError(t, err)
 			require.True(t, ok)
 
-			rowData, err := updatedTable.GetRowData(ctx)
+			rowData, err := updatedTable.GetNomsRowData(ctx)
 			assert.NoError(t, err)
 			var foundRows []row.Row
 			err = rowData.Iter(ctx, func(key, value types.Value) (stop bool, err error) {
@@ -1135,7 +1175,7 @@ func TestRenameTable(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.expectedSchema, sch)
 
-			rowData, err := newTable.GetRowData(ctx)
+			rowData, err := newTable.GetNomsRowData(ctx)
 			require.NoError(t, err)
 			var foundRows []row.Row
 			err = rowData.Iter(ctx, func(key, value types.Value) (stop bool, err error) {
@@ -1164,7 +1204,7 @@ func TestAlterSystemTables(t *testing.T) {
 		CreateTestDatabase(dEnv, t)
 
 		dtestutils.CreateTestTable(t, dEnv, "dolt_docs",
-			doltdocs.Schema,
+			doltdocs.DocsSchema,
 			NewRow(types.String("LICENSE.md"), types.String("A license")))
 		dtestutils.CreateTestTable(t, dEnv, doltdb.DoltQueryCatalogTableName,
 			dtables.DoltQueryCatalogSchema,
@@ -1486,9 +1526,7 @@ INSERT INTO child_non_unq VALUES ('1', 1), ('2', NULL), ('3', 3), ('4', 3), ('5'
 	root, err = ExecuteSql(t, dEnv, root, "CREATE INDEX abc ON child (parent_value);")
 	require.NoError(t, err)
 	_, err = ExecuteSql(t, dEnv, root, "CREATE INDEX abc_idx ON child_idx (parent_value);")
-	if assert.Error(t, err) {
-		assert.Contains(t, err.Error(), "duplicate")
-	}
+	require.NoError(t, err)
 	root, err = ExecuteSql(t, dEnv, root, "CREATE UNIQUE INDEX abc_unq ON child_unq (parent_value);")
 	require.NoError(t, err)
 	_, err = ExecuteSql(t, dEnv, root, "CREATE UNIQUE INDEX abc_non_unq ON child_non_unq (parent_value);")
@@ -1504,7 +1542,7 @@ INSERT INTO child_non_unq VALUES ('1', 1), ('2', NULL), ('3', 3), ('4', 3), ('5'
 	require.Equal(t, "abc", fkChild.TableIndex)
 	fkChildIdx, ok := fkc.GetByNameCaseInsensitive("fk_child_idx")
 	require.True(t, ok)
-	require.Equal(t, "parent_value", fkChildIdx.TableIndex)
+	require.Equal(t, "abc_idx", fkChildIdx.TableIndex)
 	fkChildUnq, ok := fkc.GetByNameCaseInsensitive("fk_child_unq")
 	require.True(t, ok)
 	require.Equal(t, "abc_unq", fkChildUnq.TableIndex)
@@ -1519,7 +1557,7 @@ INSERT INTO child_non_unq VALUES ('1', 1), ('2', NULL), ('3', 3), ('4', 3), ('5'
 	require.NoError(t, err)
 	_, err = ExecuteSql(t, dEnv, root, "INSERT INTO child_unq VALUES ('6', 5)")
 	if assert.Error(t, err) {
-		assert.True(t, sql.ErrUniqueKeyViolation.Is(err))
+		assert.True(t, sql.ErrUniqueKeyViolation.Is(err.(sql.WrappedInsertError).Cause))
 	}
 	root, err = ExecuteSql(t, dEnv, root, "INSERT INTO child_non_unq VALUES ('6', 5)")
 	require.NoError(t, err)

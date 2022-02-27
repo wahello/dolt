@@ -77,7 +77,7 @@ type indexCollectionImpl struct {
 	pks           []uint64
 }
 
-func NewIndexCollection(cols *ColCollection) IndexCollection {
+func NewIndexCollection(cols *ColCollection, pkCols *ColCollection) IndexCollection {
 	ixc := &indexCollectionImpl{
 		colColl:       cols,
 		indexes:       make(map[string]*indexImpl),
@@ -89,6 +89,11 @@ func NewIndexCollection(cols *ColCollection) IndexCollection {
 			if col.IsPartOfPK {
 				ixc.pks = append(ixc.pks, col.Tag)
 			}
+		}
+	}
+	if pkCols != nil {
+		for i, col := range pkCols.cols {
+			ixc.pks[i] = col.Tag
 		}
 	}
 	return ixc
@@ -136,8 +141,10 @@ func (ixc *indexCollectionImpl) AddIndexByColTags(indexName string, tags []uint6
 	if !ixc.tagsExist(tags...) {
 		return nil, fmt.Errorf("tags %v do not exist on this table", tags)
 	}
-	if ixc.hasIndexOnTags(tags...) {
-		return nil, fmt.Errorf("cannot create a duplicate index on this table")
+	for _, c := range ixc.colColl.cols {
+		if IsColSpatialType(c) {
+			return nil, fmt.Errorf("cannot create an index over spatial type columns")
+		}
 	}
 	index := &indexImpl{
 		indexColl:     ixc,

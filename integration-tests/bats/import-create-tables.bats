@@ -91,7 +91,8 @@ teardown() {
 @test "import-create-tables: create a table with json import. bad schema." {
     run dolt table import -c -s `batshelper employees-sch-bad.sql` employees `batshelper employees-tbl.json`
     [ "$status" -eq 1 ]
-    [[ "$output" =~ "Error determining the output schema" ]] || false
+    [[ "$output" =~ "Error creating reader for json file" ]] || false
+    [[ "$output" =~ "employees-tbl.json" ]] || false
     [[ "$output" =~ "employees-sch-bad.sql" ]] || false
 }
 
@@ -159,13 +160,9 @@ DELIM
     run dolt table import -c --pk=id fktest 1pk5col-ints.csv
     [ "$status" -eq 1 ]
     [[ "$output" =~ "fktest already exists. Use -f to overwrite." ]] || false
-    run dolt table import -f -c --pk=pk fktest other.csv
-    [ "$status" -eq 0 ]
-    [[ "$output" =~ "Import completed successfully." ]] || false
-    run dolt schema show fktest
-    skip "cannot overwrite a table with foreign key constraints"
-    [ "$status" -eq 0 ]
-    [[ ! "$output" =~ "FOREIGN KEY" ]] || false
+    run dolt table import -c --pk=pk test 1pk5col-ints.csv -f
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ 'since it is referenced from table `fktest`' ]] || false
 }
 
 @test "import-create-tables: try to create a table with a bad csv" {
@@ -587,6 +584,177 @@ DELIM
     [[ "$output" =~ "The following rows were skipped:" ]] || false
     [[ "$output" =~ "1,1,2,3,4,7" ]] || false
     [[ "$output" =~ "1,1,2,3,4,8" ]] || false
+    [[ "$output" =~ "Rows Processed: 1, Additions: 1, Modifications: 0, Had No Effect: 0" ]] || false
+    [[ "$output" =~ "Lines skipped: 2" ]] || false
+    [[ "$output" =~ "Import completed successfully." ]] || false
+}
+
+@test "import-create-tables: csv files has less columns than -s schema" {
+    cat <<SQL > schema.sql
+CREATE TABLE subset (
+    pk INT NOT NULL,
+    c1 INT,
+    c3 INT,
+    PRIMARY KEY (pk)
+);
+SQL
+     cat <<DELIM > data.csv
+pk,c3
+0,2
+DELIM
+
+    run dolt table import -s schema.sql -c subset data.csv
+    [ "$status" -eq 0 ]
+
+    # schema argument subsets the data and adds empty column
+    run dolt sql -r csv -q "select * from subset ORDER BY pk"
+    [ "$status" -eq 0 ]
+    [ "${lines[1]}" = "0,,2" ]
+}
+
+@test "import-create-tables: csv files has more columns than -s schema" {
+    cat <<SQL > schema.sql
+CREATE TABLE subset (
+    pk INT NOT NULL,
+    c1 INT,
+    c2 INT,
+    c3 INT,
+    PRIMARY KEY (pk)
+);
+SQL
+    cat <<DELIM > data.csv
+pk,c3,c1,c2,c4
+0,3,1,2,4
+DELIM
+
+    run dolt table import -s schema.sql -c subset data.csv
+    [ "$status" -eq 0 ]
+
+    # schema argument subsets the data and adds empty column
+    run dolt sql -r csv -q "select * from subset ORDER BY pk"
+    [ "$status" -eq 0 ]
+    [ "${lines[1]}" = "0,1,2,3" ]
+}
+
+@test "import-create-tables: csv files has equal columns but different order than -s schema" {
+    cat <<SQL > schema.sql
+CREATE TABLE subset (
+    pk INT NOT NULL,
+    c1 INT,
+    c2 INT,
+    PRIMARY KEY (pk)
+);
+SQL
+    cat <<DELIM > data.csv
+pk,c2,c1
+0,2,1
+DELIM
+
+    run dolt table import -s schema.sql -c subset data.csv
+    [ "$status" -eq 0 ]
+
+    # schema argument subsets the data and adds empty column
+    run dolt sql -r csv -q "select * from subset ORDER BY pk"
+    [ "$status" -eq 0 ]
+    [ "${lines[1]}" = "0,1,2" ]
+}
+
+@test "import-create-tables: csv files has less columns filled with default value" {
+    cat <<SQL > schema.sql
+CREATE TABLE subset (
+    pk INT NOT NULL,
+    c1 INT DEFAULT 42,
+    c2 INT,
+    PRIMARY KEY (pk)
+);
+SQL
+     cat <<DELIM > data.csv
+pk,c2
+0,2
+DELIM
+
+    run dolt table import -s schema.sql -c subset data.csv
+    [ "$status" -eq 0 ]
+
+    # schema argument subsets the data and adds empty column
+    run dolt sql -r csv -q "select * from subset ORDER BY pk"
+    [ "$status" -eq 0 ]
+    [ "${lines[1]}" = "0,42,2" ]
+}
+
+@test "import-create-tables: keyless table import" {
+    cat <<SQL > schema.sql
+CREATE TABLE keyless (
+    c0 INT,
+    c1 INT DEFAULT 42,
+    c2 INT
+);
+SQL
+
+    cat <<DELIM > data.csv
+c0,c2
+0,2
+DELIM
+
+    run dolt table import -s schema.sql -c keyless data.csv
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Rows Processed: 1, Additions: 0, Modifications: 1, Had No Effect: 0" ]] || false
+    [[ "$output" =~ "Import completed successfully." ]] || false
+
+    run dolt sql -r csv -q "select * from keyless"
+    [ "${lines[1]}" = "0,42,2" ]
+}
+
+@test "import-create-tables: auto-increment table" {
+    cat <<SQL > schema.sql
+CREATE TABLE test (
+    pk int PRIMARY KEY AUTO_INCREMENT,
+    v1 int
+);
+SQL
+
+    cat <<DELIM > data.csv
+pk,v1
+1,1
+2,2
+3,3
+4,4
+DELIM
+
+    run dolt table import -s schema.sql -c test data.csv
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Rows Processed: 4, Additions: 4, Modifications: 0, Had No Effect: 0" ]] || false
+    [[ "$output" =~ "Import completed successfully." ]] || false
+
+    run dolt sql -r csv -q "select * from test order by pk ASC"
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 5 ]
+    [ "${lines[1]}" = 1,1 ]
+    [ "${lines[2]}" = 2,2 ]
+    [ "${lines[3]}" = 3,3 ]
+    [ "${lines[4]}" = 4,4 ]
+
+    dolt sql -q "insert into test values (NULL, 5)"
+
+    run dolt sql -r csv -q "select * from test where pk = 5"
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [ "${lines[1]}" = 5,5 ]
+}
+
+@test "import-create-tables: --ignore-skipped-rows correctly prevents skipped rows from printing" {
+    cat <<DELIM > 1pk5col-rpt-ints.csv
+pk,c1,c2,c3,c4,c5
+1,1,2,3,4,5
+1,1,2,3,4,7
+1,1,2,3,4,8
+DELIM
+
+    run dolt table import -c --continue  --ignore-skipped-rows --pk=pk test 1pk5col-rpt-ints.csv
+    [ "$status" -eq 0 ]
+    ! [[ "$output" =~ "The following rows were skipped:" ]] || false
+    ! [[ "$output" =~ "1,1,2,3,4,7" ]] || false
+    ! [[ "$output" =~ "1,1,2,3,4,8" ]] || false
     [[ "$output" =~ "Rows Processed: 1, Additions: 1, Modifications: 0, Had No Effect: 0" ]] || false
     [[ "$output" =~ "Lines skipped: 2" ]] || false
     [[ "$output" =~ "Import completed successfully." ]] || false

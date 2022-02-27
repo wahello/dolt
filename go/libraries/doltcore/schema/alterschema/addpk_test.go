@@ -57,11 +57,14 @@ func TestAddPk(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Get the original index data
-		originalMap, err := table.GetIndexRowData(ctx, indexName)
+		originalMap, err := table.GetNomsIndexRowData(ctx, indexName)
 		assert.NoError(t, err)
 		assert.False(t, originalMap.Empty())
 
-		exitCode := commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test ADD PRIMARY KEY(id)"}, dEnv)
+		exitCode := commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test ADD constraint test_check CHECK (c1 > 0)"}, dEnv)
+		require.Equal(t, 0, exitCode)
+
+		exitCode = commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test ADD PRIMARY KEY(id)"}, dEnv)
 		require.Equal(t, 0, exitCode)
 
 		table, err = getTable(ctx, dEnv, "test")
@@ -70,8 +73,11 @@ func TestAddPk(t *testing.T) {
 		sch, err := table.GetSchema(ctx)
 		assert.NoError(t, err)
 
+		assert.Equal(t, 1, sch.Checks().Count())
+		assert.Equal(t, "test_check", sch.Checks().AllChecks()[0].Name())
+
 		// Assert the new index map is not empty
-		newMap, err := table.GetIndexRowData(ctx, indexName)
+		newMap, err := table.GetNomsIndexRowData(ctx, indexName)
 		assert.NoError(t, err)
 		assert.False(t, newMap.Empty())
 		assert.Equal(t, newMap.Len(), uint64(2))
@@ -120,7 +126,7 @@ func TestAddPk(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Assert the new index map is not empty
-		newMap, err := table.GetRowData(ctx)
+		newMap, err := table.GetNomsRowData(ctx)
 		assert.NoError(t, err)
 		assert.False(t, newMap.Empty())
 		assert.Equal(t, newMap.Len(), uint64(2))
@@ -143,5 +149,29 @@ func TestAddPk(t *testing.T) {
 		ok, err = newMap.Has(ctx, kr2Key)
 		assert.NoError(t, err)
 		assert.True(t, ok)
+	})
+
+	t.Run("Add primary key when one more cells contain NULL", func(t *testing.T) {
+		dEnv := dtestutils.CreateTestEnv()
+		ctx := context.Background()
+
+		for _, c := range setupAdd {
+			c.exec(t, ctx, dEnv)
+		}
+
+		_, err := getTable(ctx, dEnv, "test")
+		assert.NoError(t, err)
+
+		exitCode := commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test ADD PRIMARY KEY (c1)"}, dEnv)
+		require.Equal(t, 0, exitCode)
+
+		exitCode = commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test ADD COLUMN (c2 INT NULL)"}, dEnv)
+		require.Equal(t, 0, exitCode)
+
+		exitCode = commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test DROP PRIMARY KEY"}, dEnv)
+		require.Equal(t, 0, exitCode)
+
+		exitCode = commands.SqlCmd{}.Exec(ctx, "sql", []string{"-q", "ALTER TABLE test ADD PRIMARY KEY (id, c1, c2)"}, dEnv)
+		require.Equal(t, 1, exitCode)
 	})
 }

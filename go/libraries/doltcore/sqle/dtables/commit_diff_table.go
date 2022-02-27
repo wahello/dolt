@@ -24,7 +24,6 @@ import (
 
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/expression"
-	"github.com/dolthub/go-mysql-server/sql/parse"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/diff"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
@@ -45,7 +44,7 @@ type CommitDiffTable struct {
 	ddb               *doltdb.DoltDB
 	ss                *schema.SuperSchema
 	joiner            *rowconv.Joiner
-	sqlSch            sql.Schema
+	sqlSch            sql.PrimaryKeySchema
 	workingRoot       *doltdb.RootValue
 	fromCommitFilter  *expression.Equals
 	toCommitFilter    *expression.Equals
@@ -94,16 +93,9 @@ func NewCommitDiffTable(ctx *sql.Context, tblName string, ddb *doltdb.DoltDB, ro
 		return nil, err
 	}
 
-	// parses to literal, no need to pass through analyzer
-	defaultVal, err := parse.StringToColumnDefaultValue(ctx, fmt.Sprintf(`"%s"`, diffTypeModified))
-	if err != nil {
-		return nil, err
-	}
-
-	sqlSch = append(sqlSch, &sql.Column{
+	sqlSch.Schema = append(sqlSch.Schema, &sql.Column{
 		Name:     diffTypeColName,
 		Type:     sql.Text,
-		Default:  defaultVal,
 		Nullable: false,
 		Source:   diffTblName,
 	})
@@ -182,7 +174,7 @@ func (dt *CommitDiffTable) String() string {
 }
 
 func (dt *CommitDiffTable) Schema() sql.Schema {
-	return dt.sqlSch
+	return dt.sqlSch.Schema
 }
 
 type SliceOfPartitionsItr struct {
@@ -198,7 +190,7 @@ func NewSliceOfPartitionsItr(partitions []sql.Partition) *SliceOfPartitionsItr {
 	}
 }
 
-func (itr *SliceOfPartitionsItr) Next() (sql.Partition, error) {
+func (itr *SliceOfPartitionsItr) Next(*sql.Context) (sql.Partition, error) {
 	itr.mu.Lock()
 	defer itr.mu.Unlock()
 
@@ -261,7 +253,7 @@ func (dt *CommitDiffTable) Partitions(ctx *sql.Context) (sql.PartitionIter, erro
 	}
 
 	if !isDiffable {
-		ctx.Warn(PrimaryKeyChanceWarningCode, fmt.Sprintf(PrimaryKeyChangeWarning, dp.fromName, dp.toName))
+		ctx.Warn(PrimaryKeyChangeWarningCode, fmt.Sprintf(PrimaryKeyChangeWarning, dp.fromName, dp.toName))
 		return NewSliceOfPartitionsItr([]sql.Partition{}), nil
 	}
 
@@ -375,5 +367,8 @@ func (dt *CommitDiffTable) WithFilters(ctx *sql.Context, filters []sql.Expressio
 
 func (dt *CommitDiffTable) PartitionRows(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {
 	dp := part.(diffPartition)
-	return dp.getRowIter(ctx, dt.ddb, dt.ss, dt.joiner)
+	// TODO: commit_diff_table reuses diffPartition from diff_table and we've switched diff_table over
+	//       to a new format. After we switch commit_diff_table over to the same new format, we can
+	//       remove this getLegacyRowIter method.
+	return dp.getLegacyRowIter(ctx, dt.ddb, dt.ss, dt.joiner)
 }

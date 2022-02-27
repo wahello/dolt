@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
-	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/datas/pull"
 	"github.com/dolthub/dolt/go/store/types"
 
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
@@ -97,11 +97,11 @@ func (cmd BackupCmd) RequiresRepo() bool {
 
 // CreateMarkdown creates a markdown file containing the helptext for the command at the given path
 func (cmd BackupCmd) CreateMarkdown(wr io.Writer, commandStr string) error {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	return CreateMarkdown(wr, cli.GetCommandDocumentation(commandStr, backupDocs, ap))
 }
 
-func (cmd BackupCmd) createArgParser() *argparser.ArgParser {
+func (cmd BackupCmd) ArgParser() *argparser.ArgParser {
 	ap := argparser.NewArgParser()
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"region", "cloud provider region associated with this backup."})
 	ap.ArgListHelp = append(ap.ArgListHelp, [2]string{"creds-type", "credential type.  Valid options are role, env, and file.  See the help section for additional details."})
@@ -121,7 +121,7 @@ func (cmd BackupCmd) EventType() eventsapi.ClientEventType {
 
 // Exec executes the command
 func (cmd BackupCmd) Exec(ctx context.Context, commandStr string, args []string, dEnv *env.DoltEnv) int {
-	ap := cmd.createArgParser()
+	ap := cmd.ArgParser()
 	help, usage := cli.HelpAndUsagePrinters(cli.GetCommandDocumentation(commandStr, backupDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, help)
 
@@ -257,7 +257,7 @@ func syncBackup(ctx context.Context, dEnv *env.DoltEnv, apr *argparser.ArgParseR
 	}
 
 	destDb, err := b.GetRemoteDB(ctx, dEnv.DoltDB.ValueReadWriter().Format())
-	err = actions.SyncRoots(ctx, dEnv.DoltDB, destDb, dEnv.TempTableFilesDir(), runProgFuncs, stopProgFuncs)
+	err = actions.SyncRoots(ctx, dEnv.DoltDB, destDb, dEnv.TempTableFilesDir(), buildProgStarter(defaultLanguage), stopProgFuncs)
 
 	switch err {
 	case nil:
@@ -270,7 +270,7 @@ func syncBackup(ctx context.Context, dEnv *env.DoltEnv, apr *argparser.ArgParseR
 		return errhand.BuildDError("error: '%s' is not valid.", b.Url).AddCause(err).Build()
 	case env.ErrInvalidBackupName:
 		return errhand.BuildDError("error: invalid backup name: " + b.Name).Build()
-	case datas.ErrDBUpToDate:
+	case pull.ErrDBUpToDate:
 		return errhand.BuildDError("error: backup already up to date").Build()
 	default:
 		return errhand.BuildDError("error: Unable to save changes.").AddCause(err).Build()
@@ -319,7 +319,7 @@ func restoreBackup(ctx context.Context, dEnv *env.DoltEnv, apr *argparser.ArgPar
 		return errhand.VerboseErrorFromError(err)
 	}
 
-	err = actions.SyncRoots(ctx, srcDb, dEnv.DoltDB, dEnv.TempTableFilesDir(), runProgFuncs, stopProgFuncs)
+	err = actions.SyncRoots(ctx, srcDb, dEnv.DoltDB, dEnv.TempTableFilesDir(), buildProgStarter(downloadLanguage), stopProgFuncs)
 	if err != nil {
 		// If we're cloning into a directory that already exists do not erase it. Otherwise
 		// make best effort to delete the directory we created.

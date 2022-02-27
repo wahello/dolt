@@ -25,12 +25,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/dtestutils"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/schema/encoding"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema/typeinfo"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/untyped"
 	"github.com/dolthub/dolt/go/store/types"
@@ -323,7 +323,7 @@ func GetAllRows(root *doltdb.RootValue, tableName string) ([]row.Row, error) {
 		return nil, err
 	}
 
-	rowData, err := table.GetRowData(ctx)
+	rowData, err := table.GetNomsRowData(ctx)
 
 	if err != nil {
 		return nil, err
@@ -513,7 +513,7 @@ func UpdateTables(t *testing.T, ctx context.Context, root *doltdb.RootValue, tbl
 		var rowData types.Map
 		if updates.NewRowData == nil {
 			if ok {
-				rowData, err = tbl.GetRowData(ctx)
+				rowData, err = tbl.GetNomsRowData(ctx)
 				require.NoError(t, err)
 			} else {
 				rowData, err = types.NewMap(ctx, root.VRW())
@@ -534,16 +534,14 @@ func UpdateTables(t *testing.T, ctx context.Context, root *doltdb.RootValue, tbl
 			require.NoError(t, err)
 		}
 
-		schVal, err := encoding.MarshalSchemaAsNomsValue(ctx, root.VRW(), sch)
-		require.NoError(t, err)
-
-		indexData, err := types.NewMap(ctx, root.VRW())
+		var indexData durable.IndexSet
 		require.NoError(t, err)
 		if tbl != nil {
-			indexData, err = tbl.GetIndexData(ctx)
+			indexData, err = tbl.GetIndexSet(ctx)
 			require.NoError(t, err)
 		}
-		tbl, err = doltdb.NewTable(ctx, root.VRW(), schVal, rowData, indexData, nil)
+
+		tbl, err = doltdb.NewNomsTable(ctx, root.VRW(), sch, rowData, indexData, nil)
 		require.NoError(t, err)
 
 		root, err = root.PutTable(ctx, tblName, tbl)

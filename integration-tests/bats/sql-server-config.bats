@@ -10,6 +10,7 @@ make_repo() {
 }
 
 setup() {
+    skiponwindows "tests are flaky on Windows"
     setup_no_dolt_init
     make_repo repo1
     make_repo repo2
@@ -51,6 +52,27 @@ teardown() {
     run dolt config --local --list
     [ "$status" -eq 0 ]
     [[ "$output" =~ "sqlserver.global.max_connections = 1000" ]] || false
+}
+
+@test "sql-server-config: dolt_transaction_commit is global variable" {
+    cd repo1
+    start_sql_server repo1
+
+    insert_query repo1 1 "SET @@GLOBAL.dolt_transaction_commit = 1"
+    server_query repo1 1 "select @@GLOBAL.dolt_transaction_commit" "@@GLOBAL.dolt_transaction_commit\n1"
+    server_query repo1 1 "select @@SESSION.dolt_transaction_commit" "@@SESSION.dolt_transaction_commit\n1"
+    server_query repo1 1 "select @@dolt_transaction_commit" "@@SESSION.dolt_transaction_commit\n1"
+
+    # only 1 commit
+    commits=$(dolt log --oneline | wc -l)
+    [ $commits -eq 1 ]
+
+    # create a table
+    server_query repo1 1 "create table tmp (i int)"
+
+    # now there are two commits
+    commits=$(dolt log --oneline | wc -l)
+    [ $commits -eq 2 ]
 }
 
 @test "sql-server-config: persist only global variable during server session" {

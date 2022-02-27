@@ -212,6 +212,9 @@ func parentFkConstraintViolations(
 				}
 				return false, nil
 			}()
+			if err != nil {
+				return nil, false, err
+			}
 			if shouldContinue {
 				continue
 			}
@@ -429,7 +432,7 @@ func newConstraintViolationsLoadedTable(ctx context.Context, tblName, idxName st
 	if err != nil {
 		return nil, false, err
 	}
-	rowData, err := tbl.GetRowData(ctx)
+	rowData, err := tbl.GetNomsRowData(ctx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -442,7 +445,7 @@ func newConstraintViolationsLoadedTable(ctx context.Context, tblName, idxName st
 			RowData:   rowData,
 		}, false, nil
 	}
-	indexData, err := tbl.GetIndexRowData(ctx, idx.Name())
+	indexData, err := tbl.GetNomsIndexRowData(ctx, idx.Name())
 	if err != nil {
 		return nil, false, err
 	}

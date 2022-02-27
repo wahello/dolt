@@ -16,6 +16,30 @@ teardown() {
     [[ "$output" =~ "Initialize data repository" ]] || false
 }
 
+@test "log: log respects branches" {
+    dolt branch branch1
+    dolt commit --allow-empty -m "commit 1 MAIN"
+    dolt commit	--allow-empty -m "commit 2 MAIN"
+    dolt commit	--allow-empty -m "commit 3 MAIN"
+    run dolt log
+    [ $status -eq 0 ]
+    [[ "$output" =~ "MAIN" ]] || false
+    [[ ! "$output" =~ "BRANCH1" ]] || false
+    dolt checkout branch1
+    dolt commit	--allow-empty -m "commit 1 BRANCH1"
+    dolt commit --allow-empty -m "commit 2 BRANCH1"
+    dolt commit --allow-empty -m "commit 3 BRANCH1"
+    run	dolt log
+    [ $status -eq 0 ]
+    [[ ! "$output" =~ "MAIN" ]] || false
+    [[ "$output" =~ "BRANCH1" ]] || false
+    dolt checkout main
+    run	dolt log
+    [ $status -eq 0 ]
+    [[ "$output" =~ "MAIN" ]] || false
+    [[ ! "$output" =~ "BRANCH1" ]] || false
+}
+
 @test "log: with -n specified" {
     dolt sql -q "create table test (pk int, c1 int, primary key(pk))"
     dolt add test
@@ -285,4 +309,94 @@ teardown() {
     [ $status -eq 0 ]
     regex='commit .* .*\n'
     [[ "$output" =~ $regex ]] || false
+}
+
+@test "log: --oneline only shows commit message in one line" {
+    dolt commit --allow-empty -m "a message 1"
+    dolt commit --allow-empty -m "a message 2"
+    run dolt log --oneline
+    [[ !("$output" =~ "Author") ]] || false
+    [[ !("$output" =~ "Date") ]] || false
+    [[ !("$output" =~ "commit") ]] || false
+    res=$(dolt log --oneline | wc -l)
+    [ "$res" -eq 3 ] # don't forget initial commit
+    dolt commit --allow-empty -m "a message 3"
+    res=$(dolt log --oneline | wc -l)
+    [ "$res" -eq 4 ] # exactly 1 line is added
+}
+
+@test "log: --decorate=short shows trimmed branches and tags" {
+    dolt tag tag_v0
+    run dolt log --decorate=short
+    [[ "$output" =~ "commit" ]] || false
+    [[ "$output" =~ "Author" ]] || false
+    [[ "$output" =~ "Date" ]] || false
+    [[ "$output" =~ "main" ]] || false
+    [[ "$output" =~ "tag: tag_v0" ]] || false
+    [[ !("$output" =~ "/refs/heads/") ]] || false
+    [[ !("$output" =~ "/refs/tags/") ]] || false
+}
+
+@test "log: --decorate=full shows full branches and tags" {
+    dolt tag tag_v0
+    run dolt log --decorate=full
+    [[ "$output" =~ "commit" ]] || false
+    [[ "$output" =~ "Author" ]] || false
+    [[ "$output" =~ "Date" ]] || false
+    [[ "$output" =~ "refs/heads/main" ]] || false
+    [[ "$output" =~ "tag: refs/tags/tag_v0" ]] || false
+}
+
+@test "log: --decorate=no doesn't show branches or tags" {
+    dolt tag tag_v0
+    run dolt log --decorate=no
+    [[ "$output" =~ "commit" ]] || false
+    [[ "$output" =~ "Author" ]] || false
+    [[ "$output" =~ "Date" ]] || false
+    [[ !("$output" =~ "main") ]] || false
+    [[ !("$output" =~ "tag_v0") ]] || false
+}
+
+@test "log: decorate and oneline work together" {
+    dolt commit --allow-empty -m "a message 1"
+    dolt commit --allow-empty -m "a message 2"
+    run dolt log --oneline --decorate=full
+    [[ !("$output" =~ "commit") ]] || false
+    [[ !("$output" =~ "Author") ]] || false
+    [[ !("$output" =~ "Date") ]] || false
+    [[ "$output" =~ "refs/heads/main" ]] || false
+    res=$(dolt log --oneline --decorate=full | wc -l)
+    [ "$res" -eq 3 ] # don't forget initial commit
+    dolt commit --allow-empty -m "a message 3"
+    res=$(dolt log --oneline | wc -l)
+    [ "$res" -eq 4 ] # exactly 1 line is added
+}
+
+@test "log: --decorate=notanoption throws error" {
+    run dolt log --decorate=notanoption
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ "fatal: invalid --decorate option" ]] || false
+}
+
+@test "log: check pager" {
+    skiponwindows "Need to install expect and make this script work on windows."
+    dolt commit --allow-empty -m "commit 1"
+    dolt commit	--allow-empty -m "commit 2"
+    dolt commit	--allow-empty -m "commit 3"
+    dolt commit --allow-empty -m "commit 4"
+    dolt commit	--allow-empty -m "commit 5"
+    dolt commit	--allow-empty -m "commit 6"
+    dolt commit --allow-empty -m "commit 7"
+    dolt commit	--allow-empty -m "commit 8"
+    dolt commit	--allow-empty -m "commit 9"
+    dolt commit --allow-empty -m "commit 10"
+    dolt commit	--allow-empty -m "commit 11"
+    dolt commit	--allow-empty -m "commit 12"
+    dolt commit	--allow-empty -m "commit 13"
+    dolt commit --allow-empty -m "commit 14"
+    dolt commit	--allow-empty -m "commit 15"
+    dolt commit	--allow-empty -m "commit 16"
+
+    run expect $BATS_TEST_DIRNAME/log.expect
+    [ "$status" -eq 0 ]
 }

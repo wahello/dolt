@@ -16,8 +16,10 @@ package sqlutil
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -38,8 +40,8 @@ type mapSqlIter struct {
 var _ sql.RowIter = (*mapSqlIter)(nil)
 
 // Next implements the interface sql.RowIter.
-func (m *mapSqlIter) Next() (sql.Row, error) {
-	dRow, err := m.nmr.ReadRow(m.ctx)
+func (m *mapSqlIter) Next(ctx *sql.Context) (sql.Row, error) {
+	dRow, err := m.nmr.ReadRow(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +60,6 @@ func MapToSqlIter(ctx context.Context, sch schema.Schema, data types.Map) (sql.R
 		return nil, err
 	}
 	return &mapSqlIter{
-		ctx: ctx,
 		nmr: mapReader,
 		sch: sch,
 	}, nil
@@ -66,6 +67,10 @@ func MapToSqlIter(ctx context.Context, sch schema.Schema, data types.Map) (sql.R
 
 // DoltRowToSqlRow constructs a go-mysql-server sql.Row from a Dolt row.Row.
 func DoltRowToSqlRow(doltRow row.Row, sch schema.Schema) (sql.Row, error) {
+	if doltRow == nil {
+		return nil, nil
+	}
+
 	colVals := make(sql.Row, sch.GetAllCols().Size())
 	i := 0
 
@@ -95,61 +100,46 @@ func SqlRowToDoltRow(ctx context.Context, vrw types.ValueReadWriter, r sql.Row, 
 // DoltKeyValueAndMappingFromSqlRow converts a sql.Row to key and value tuples and keeps a mapping from tag to value that
 // can be used to speed up index key generation for foreign key checks.
 func DoltKeyValueAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWriter, r sql.Row, doltSchema schema.Schema) (types.Tuple, types.Tuple, map[uint64]types.Value, error) {
-	allCols := doltSchema.GetAllCols()
-	nonPKCols := doltSchema.GetNonPKCols()
-
-	numCols := allCols.Size()
+	numCols := doltSchema.GetAllCols().Size()
 	vals := make([]types.Value, numCols*2)
 	tagToVal := make(map[uint64]types.Value, numCols)
 
+	nonPKCols := doltSchema.GetNonPKCols()
 	numNonPKVals := nonPKCols.Size() * 2
 	nonPKVals := vals[:numNonPKVals]
 	pkVals := vals[numNonPKVals:]
 
-	// values for the pk tuple are in schema order
-	pkIdx := 0
-	for i := 0; i < numCols; i++ {
-		schCol := allCols.GetAtIndex(i)
+	for i, c := range doltSchema.GetAllCols().GetColumns() {
 		val := r[i]
 		if val == nil {
-			if !schCol.IsNullable() {
-				return types.Tuple{}, types.Tuple{}, nil, fmt.Errorf("column <%v> received nil but is non-nullable", schCol.Name)
-			}
 			continue
 		}
 
-		tag := schCol.Tag
-		nomsVal, err := schCol.TypeInfo.ConvertValueToNomsValue(ctx, vrw, val)
-
+		nomsVal, err := c.TypeInfo.ConvertValueToNomsValue(ctx, vrw, val)
 		if err != nil {
 			return types.Tuple{}, types.Tuple{}, nil, err
 		}
 
-		tagToVal[tag] = nomsVal
-
-		if schCol.IsPartOfPK {
-			pkVals[pkIdx] = types.Uint(tag)
-			pkVals[pkIdx+1] = nomsVal
-			pkIdx += 2
-		}
+		tagToVal[c.Tag] = nomsVal
 	}
 
-	// no nulls in keys
-	if pkIdx != len(pkVals) {
-		return types.Tuple{}, types.Tuple{}, nil, errors.New("not all pk columns have a value")
-	}
-
-	// non pk values in tag sorted order
 	nonPKIdx := 0
-	nonPKTags := len(tagToVal) - (pkIdx / 2)
-	for i := 0; i < len(nonPKCols.SortedTags) && nonPKIdx < (nonPKTags*2); i++ {
-		tag := nonPKCols.SortedTags[i]
-		val, ok := tagToVal[tag]
-
-		if ok {
+	for _, tag := range nonPKCols.SortedTags {
+		// nonPkCols sorted by ascending tag order
+		if val, ok := tagToVal[tag]; ok {
 			nonPKVals[nonPKIdx] = types.Uint(tag)
 			nonPKVals[nonPKIdx+1] = val
 			nonPKIdx += 2
+		}
+	}
+
+	pkIdx := 0
+	for _, tag := range doltSchema.GetPKCols().Tags {
+		// pkCols are in the primary key defined order
+		if val, ok := tagToVal[tag]; ok {
+			pkVals[pkIdx] = types.Uint(tag)
+			pkVals[pkIdx+1] = val
+			pkIdx += 2
 		}
 	}
 
@@ -171,7 +161,7 @@ func DoltKeyValueAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWr
 	return keyTuple, valTuple, tagToVal, nil
 }
 
-// DoltKeyValueAndMappingFromSqlRow converts a sql.Row to key tuple and keeps a mapping from tag to value that
+// DoltKeyAndMappingFromSqlRow converts a sql.Row to key tuple and keeps a mapping from tag to value that
 // can be used to speed up index key generation for foreign key checks.
 func DoltKeyAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWriter, r sql.Row, doltSchema schema.Schema) (types.Tuple, map[uint64]types.Value, error) {
 	allCols := doltSchema.GetAllCols()
@@ -192,9 +182,6 @@ func DoltKeyAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWriter,
 		schCol := allCols.GetAtIndex(i)
 		val := r[i]
 		if val == nil {
-			if !schCol.IsNullable() {
-				return types.Tuple{}, nil, fmt.Errorf("column <%v> received nil but is non-nullable", schCol.Name)
-			}
 			continue
 		}
 
@@ -241,9 +228,6 @@ func pkDoltRowFromSqlRow(ctx context.Context, vrw types.ValueReadWriter, r sql.R
 			if err != nil {
 				return nil, err
 			}
-		} else if !schCol.IsNullable() {
-			// TODO: this isn't an error in the case of result set construction (where non-null columns can indeed be null)
-			return nil, fmt.Errorf("column <%v> received nil but is non-nullable", schCol.Name)
 		}
 	}
 	return row.New(vrw.Format(), doltSchema, taggedVals)
@@ -268,6 +252,56 @@ func keylessDoltRowFromSqlRow(ctx context.Context, vrw types.ValueReadWriter, sq
 	}
 
 	return row.KeylessRow(vrw.Format(), vals[:j]...)
+}
+
+// WriteEWKBHeader writes the SRID, endianness, and type to the byte buffer
+// This function assumes v is a valid spatial type
+func WriteEWKBHeader(v interface{}, buf []byte) {
+	// Write endianness byte (always little endian)
+	buf[4] = 1
+
+	// Parse data
+	switch v := v.(type) {
+	case sql.Point:
+		// Write SRID and type
+		binary.LittleEndian.PutUint32(buf[0:4], v.SRID)
+		binary.LittleEndian.PutUint32(buf[5:9], 1)
+	case sql.Linestring:
+		binary.LittleEndian.PutUint32(buf[0:4], v.SRID)
+		binary.LittleEndian.PutUint32(buf[5:9], 2)
+	case sql.Polygon:
+		binary.LittleEndian.PutUint32(buf[0:4], v.SRID)
+		binary.LittleEndian.PutUint32(buf[5:9], 3)
+	}
+}
+
+// WriteEWKBPointData converts a Point into a byte array in EWKB format
+// Very similar to function in GMS
+func WriteEWKBPointData(p sql.Point, buf []byte) {
+	binary.LittleEndian.PutUint64(buf[0:8], math.Float64bits(p.X))
+	binary.LittleEndian.PutUint64(buf[8:16], math.Float64bits(p.Y))
+}
+
+// WriteEWKBLineData converts a Line into a byte array in EWKB format
+func WriteEWKBLineData(l sql.Linestring, buf []byte) {
+	// Write length of linestring
+	binary.LittleEndian.PutUint32(buf[:4], uint32(len(l.Points)))
+	// Append each point
+	for i, p := range l.Points {
+		WriteEWKBPointData(p, buf[4+16*i:4+16*(i+1)])
+	}
+}
+
+// WriteEWKBPolyData converts a Polygon into a byte array in EWKB format
+func WriteEWKBPolyData(p sql.Polygon, buf []byte) {
+	// Write length of polygon
+	binary.LittleEndian.PutUint32(buf[:4], uint32(len(p.Lines)))
+	// Write each line
+	start, stop := 0, 4
+	for _, l := range p.Lines {
+		start, stop = stop, stop+4+16*len(l.Points)
+		WriteEWKBLineData(l, buf[start:stop])
+	}
 }
 
 // SqlColToStr is a utility function for converting a sql column of type interface{} to a string
@@ -300,6 +334,8 @@ func SqlColToStr(ctx context.Context, col interface{}) string {
 			return strconv.FormatFloat(float64(typedCol), 'g', -1, 32)
 		case string:
 			return typedCol
+		case []byte:
+			return string(typedCol)
 		case bool:
 			if typedCol {
 				return "true"
@@ -308,6 +344,25 @@ func SqlColToStr(ctx context.Context, col interface{}) string {
 			}
 		case time.Time:
 			return typedCol.Format("2006-01-02 15:04:05.999999 -0700 MST")
+		case sql.Point:
+			buf := make([]byte, 25)
+			WriteEWKBHeader(typedCol, buf)
+			WriteEWKBPointData(typedCol, buf[9:])
+			return SqlColToStr(ctx, buf)
+		case sql.Linestring:
+			buf := make([]byte, 9+4+16*len(typedCol.Points))
+			WriteEWKBHeader(typedCol, buf)
+			WriteEWKBLineData(typedCol, buf[9:])
+			return SqlColToStr(ctx, buf)
+		case sql.Polygon:
+			size := 0
+			for _, l := range typedCol.Lines {
+				size += 4 + 16*len(l.Points)
+			}
+			buf := make([]byte, 9+4+size)
+			WriteEWKBHeader(typedCol, buf)
+			WriteEWKBPolyData(typedCol, buf[9:])
+			return SqlColToStr(ctx, buf)
 		case sql.JSONValue:
 			s, err := typedCol.ToString(sql.NewContext(ctx))
 			if err != nil {
@@ -315,7 +370,7 @@ func SqlColToStr(ctx context.Context, col interface{}) string {
 			}
 			return s
 		default:
-			return fmt.Sprintf("%v", typedCol)
+			return fmt.Sprintf("no match: %v", typedCol)
 		}
 	}
 

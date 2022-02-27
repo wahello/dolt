@@ -172,14 +172,6 @@ func (ti *decimalType) NomsKind() types.NomsKind {
 	return types.DecimalKind
 }
 
-// ParseValue implements TypeInfo interface.
-func (ti *decimalType) ParseValue(ctx context.Context, vrw types.ValueReadWriter, str *string) (types.Value, error) {
-	if str == nil || *str == "" {
-		return types.NullValue, nil
-	}
-	return ti.ConvertValueToNomsValue(context.Background(), nil, *str)
-}
-
 // Promote implements TypeInfo interface.
 func (ti *decimalType) Promote() TypeInfo {
 	return &decimalType{ti.sqlDecimalType.Promote().(sql.DecimalType)}
@@ -266,6 +258,12 @@ func decimalTypeConverter(ctx context.Context, src *decimalType, destTi TypeInfo
 			return dest.ConvertValueToNomsValue(ctx, vrw, decimal.Decimal(val).Round(0))
 		}, true, nil
 	case *jsonType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *linestringType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *pointType:
+		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
+	case *polygonType:
 		return wrapConvertValueToNomsValue(dest.ConvertValueToNomsValue)
 	case *setType:
 		return func(ctx context.Context, vrw types.ValueReadWriter, v types.Value) (types.Value, error) {

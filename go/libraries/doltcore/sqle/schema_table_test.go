@@ -41,11 +41,11 @@ func TestSchemaTableRecreation(t *testing.T) {
 	require.NoError(t, err)
 	ctx.SetCurrentDatabase(db.Name())
 
-	err = db.createSqlTable(ctx, doltdb.SchemasTableName, sql.Schema{ // schema of dolt_schemas table before the change
+	err = db.createSqlTable(ctx, doltdb.SchemasTableName, sql.NewPrimaryKeySchema(sql.Schema{ // schema of dolt_schemas table before the change
 		{Name: doltdb.SchemasTablesTypeCol, Type: sql.Text, Source: doltdb.SchemasTableName, PrimaryKey: true},
 		{Name: doltdb.SchemasTablesNameCol, Type: sql.Text, Source: doltdb.SchemasTableName, PrimaryKey: true},
 		{Name: doltdb.SchemasTablesFragmentCol, Type: sql.Text, Source: doltdb.SchemasTableName, PrimaryKey: false},
-	})
+	}))
 	require.NoError(t, err)
 	sqlTbl, found, err := db.GetTableInsensitive(ctx, doltdb.SchemasTableName)
 	require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestSchemaTableRecreation(t *testing.T) {
 	table, err := sqlTbl.(*WritableDoltTable).doltTable(ctx)
 	require.NoError(t, err)
 
-	rowData, err := table.GetRowData(ctx)
+	rowData, err := table.GetNomsRowData(ctx)
 	require.NoError(t, err)
 	expectedVals := []sql.Row{
 		{"view", "view1", "SELECT v1 FROM test;"},
@@ -84,7 +84,7 @@ func TestSchemaTableRecreation(t *testing.T) {
 	table, err = tbl.doltTable(ctx)
 	require.NoError(t, err)
 
-	rowData, err = table.GetRowData(ctx)
+	rowData, err = table.GetNomsRowData(ctx)
 	require.NoError(t, err)
 	expectedVals = []sql.Row{
 		{"view", "view1", "SELECT v1 FROM test;", int64(1)},
