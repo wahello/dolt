@@ -16,14 +16,14 @@ package dbfactory
 
 import (
 	"context"
-	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
 
+	"github.com/dolthub/dolt/go/store/chunks"
+
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"github.com/dolthub/dolt/go/store/datas"
-	"github.com/dolthub/dolt/go/store/nbs"
 	"github.com/dolthub/dolt/go/store/types"
 )
 
@@ -58,33 +58,38 @@ func (fact FileFactory) CreateDB(ctx context.Context, nbf *types.NomsBinFormat, 
 		return nil, nil, err
 	}
 
-	newGenSt, err := nbs.NewLocalStore(ctx, nbf.VersionString(), path, defaultMemTableSize)
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	oldgenPath := filepath.Join(path, "oldgen")
-	err = validateDir(oldgenPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, nil, err
-		}
-
-		err = os.Mkdir(oldgenPath, os.ModePerm)
-		if err != nil && !errors.Is(err, os.ErrExist) {
-			return nil, nil, err
-		}
-	}
-
-	oldGenSt, err := nbs.NewLocalStore(ctx, newGenSt.Version(), oldgenPath, defaultMemTableSize)
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	st := nbs.NewGenerationalCS(oldGenSt, newGenSt)
+	//newGenSt, err := nbs.NewLocalStore(ctx, nbf.VersionString(), path, defaultMemTableSize)
+	//
+	//if err != nil {
+	//	return nil, nil, err
+	//}
+	//
+	//oldgenPath := filepath.Join(path, "oldgen")
+	//err = validateDir(oldgenPath)
+	//if err != nil {
+	//	if !errors.Is(err, os.ErrNotExist) {
+	//		return nil, nil, err
+	//	}
+	//
+	//	err = os.Mkdir(oldgenPath, os.ModePerm)
+	//	if err != nil && !errors.Is(err, os.ErrExist) {
+	//		return nil, nil, err
+	//	}
+	//}
+	//
+	//oldGenSt, err := nbs.NewLocalStore(ctx, newGenSt.Version(), oldgenPath, defaultMemTableSize)
+	//
+	//if err != nil {
+	//	return nil, nil, err
+	////}
+	//
+	//st := nbs.NewGenerationalCS(oldGenSt, newGenSt)
 	// metrics?
+
+	st, err := chunks.NewFileStore(path, nbf.VersionString())
+	if err != nil {
+		return nil, nil, err
+	}
 
 	vrw := types.NewValueStore(st)
 

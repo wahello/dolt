@@ -34,7 +34,7 @@ const (
 	defaultBuffSz  = 1024 * 16
 )
 
-func NewFileStore(path string) (*FileStore, error) {
+func NewFileStore(path, ver string) (*FileStore, error) {
 	path = filepath.Join(path, fileStoreName)
 
 	flag := os.O_CREATE | os.O_RDWR
@@ -53,6 +53,7 @@ func NewFileStore(path string) (*FileStore, error) {
 		rd:  f,
 		wr:  wr,
 		mu:  &sync.RWMutex{},
+		ver: ver,
 	}
 
 	if err = populateFileStoreIndex(fs); err != nil {
@@ -65,12 +66,13 @@ func NewFileStore(path string) (*FileStore, error) {
 type FileStore struct {
 	root hash.Hash
 	idx  map[hash.Hash]indexEntry
+	mu   *sync.RWMutex
 
 	rd  io.ReaderAt
 	wr  *bufio.Writer
 	pos int64
 
-	mu *sync.RWMutex
+	ver string
 }
 
 var _ ChunkStore = &FileStore{}
@@ -141,7 +143,7 @@ func (fs *FileStore) Put(ctx context.Context, c Chunk) error {
 }
 
 func (fs *FileStore) Version() string {
-	return ""
+	return fs.ver
 }
 
 func (fs *FileStore) Rebase(ctx context.Context) error {
@@ -184,6 +186,11 @@ func (fs *FileStore) Close() error {
 }
 
 func (fs *FileStore) readChunk(e indexEntry) (Chunk, error) {
+	// we must flush before we can read
+	if err := fs.wr.Flush(); err != nil {
+		return Chunk{}, err
+	}
+
 	r, err := readChunkRecord(fs.rd, e)
 	if err != nil {
 		return Chunk{}, err
@@ -199,6 +206,7 @@ func (fs *FileStore) writeChunk(c Chunk) error {
 		length: uint32(c.Size()),
 		data:   c.Data(),
 	}
+	off := uint32(fs.pos)
 
 	n, err := writeChunkRecord(fs.wr, rec)
 	if err != nil {
@@ -206,6 +214,11 @@ func (fs *FileStore) writeChunk(c Chunk) error {
 	}
 	fs.pos += int64(n)
 
+	fs.idx[rec.key] = indexEntry{
+		key:    rec.key,
+		length: rec.length,
+		offset: off,
+	}
 	return nil
 }
 
