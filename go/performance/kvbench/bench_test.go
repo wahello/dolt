@@ -32,7 +32,7 @@ const (
 )
 
 var defaultParams = loadParams{
-	cardinality: 100,
+	cardinality: 10_000,
 	keySize:     20,
 	valSize:     5000,
 }
@@ -65,6 +65,11 @@ func BenchmarkBitcaskStore(b *testing.B) {
 // usage: `go test -bench BenchmarkNBSStore`
 func BenchmarkNBSStore(b *testing.B) {
 	benchmarkKVStore(b, newNBSStore(os.TempDir()))
+}
+
+// usage: `go test -bench BenchmarkFileStore`
+func BenchmarkFileStore(b *testing.B) {
+	benchmarkKVStore(b, NewFileStore(os.TempDir()))
 }
 
 func benchmarkKVStore(b *testing.B, store keyValStore) {
