@@ -23,8 +23,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/dolthub/dolt/go/store/hash"
+	"github.com/dolthub/dolt/go/store/metrics"
 )
 
 const (
@@ -38,6 +40,8 @@ var store *FileStore
 
 func NewFileStore(path, ver string) (*FileStore, error) {
 	// TODO(andy): this is gross and bad
+	//  this was necessary for the boltdb chunkstore,
+	//  it's not clear if it's necessary here.
 	if store != nil {
 		return store, nil
 	}
@@ -55,12 +59,18 @@ func NewFileStore(path, ver string) (*FileStore, error) {
 	wr := bufio.NewWriterSize(f, defaultBuffSz)
 	idx := make(map[hash.Hash]indexEntry, defaultIndexSz)
 
+	stats := &fileStoreStats{
+		SyncLatency:  metrics.NewTimeHistogram(),
+		BytesPerSync: metrics.NewByteHistogram(),
+	}
+
 	store = &FileStore{
-		idx: idx,
-		f:   f,
-		wr:  wr,
-		mu:  &sync.RWMutex{},
-		ver: ver,
+		idx:   idx,
+		f:     f,
+		wr:    wr,
+		mu:    &sync.RWMutex{},
+		ver:   ver,
+		stats: stats,
 	}
 
 	if err = populateFileStoreIndex(store); err != nil {
@@ -79,7 +89,8 @@ type FileStore struct {
 	wr  *bufio.Writer
 	pos int64
 
-	ver string
+	ver   string
+	stats *fileStoreStats
 }
 
 var _ ChunkStore = &FileStore{}
@@ -146,6 +157,9 @@ func (st *FileStore) HasMany(ctx context.Context, hashes hash.HashSet) (absent h
 func (st *FileStore) Put(ctx context.Context, c Chunk) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if _, ok := st.idx[c.Hash()]; ok {
+		return nil
+	}
 	return st.writeChunk(c)
 }
 
@@ -174,24 +188,44 @@ func (st *FileStore) Commit(ctx context.Context, current, last hash.Hash) (bool,
 	if err := st.writeRootUpdate(current); err != nil {
 		return false, err
 	}
+
+	// todo(andy): this size is inaccurate if the buffer
+	//  is flushed between commits dues to chunk reads
+	//  or buffer reaching capacity.
+	st.stats.recordSyncSize(uint64(st.wr.Buffered()))
+	t1 := time.Now()
+	defer st.stats.recordSyncLatency(t1)
+
 	if err := st.wr.Flush(); err != nil {
 		return false, err
 	}
+	if err := st.sync(); err != nil {
+		return false, err
+	}
+
 	st.root = current
 
 	return true, nil
 }
 
 func (st *FileStore) Stats() interface{} {
-	return nil
+	return st.stats
 }
 
 func (st *FileStore) StatsSummary() string {
-	return ""
+	l := st.stats.SyncLatency.String()
+	s := st.stats.BytesPerSync.String()
+	return fmt.Sprintf("Latency: %s \nSize %s", l, s)
 }
 
 func (st *FileStore) Close() error {
 	return st.f.Close()
+}
+
+func (st *FileStore) sync() error {
+	// todo(andy): if available,
+	//  calling f_data_sync() might be faster
+	return st.f.Sync()
 }
 
 func (st *FileStore) readChunk(e indexEntry) (Chunk, error) {
@@ -355,4 +389,17 @@ func validateChunkRead(e indexEntry, r chunkRecord) error {
 		panic("expected ok")
 	}
 	return nil
+}
+
+type fileStoreStats struct {
+	SyncLatency  metrics.Histogram
+	BytesPerSync metrics.Histogram
+}
+
+func (s *fileStoreStats) recordSyncLatency(t1 time.Time) {
+	s.SyncLatency.SampleTimeSince(t1)
+}
+
+func (s *fileStoreStats) recordSyncSize(sz uint64) {
+	s.BytesPerSync.Sample(sz)
 }
