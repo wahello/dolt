@@ -157,7 +157,6 @@ type EphemeralPrinter struct {
 // should defer Stop after calling this.
 func StartEphemeralPrinter() *EphemeralPrinter {
 	w := uilive.New()
-	w.Out = CliOut
 	e := &EphemeralPrinter{outW: w, w: w}
 	e.start()
 	return e
