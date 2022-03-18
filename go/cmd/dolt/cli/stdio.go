@@ -22,9 +22,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/dolthub/uilive"
 	"github.com/fatih/color"
 	"github.com/google/uuid"
-	"github.com/gosuri/uilive"
 
 	"github.com/dolthub/dolt/go/libraries/utils/iohelp"
 )
@@ -157,6 +157,8 @@ type EphemeralPrinter struct {
 // should defer Stop after calling this.
 func StartEphemeralPrinter() *EphemeralPrinter {
 	w := uilive.New()
+	w.Out = CliOut
+	w.UnderlyingFile = os.Stdout
 	e := &EphemeralPrinter{outW: w, w: w}
 	e.start()
 	return e
