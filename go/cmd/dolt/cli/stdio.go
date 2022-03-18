@@ -42,8 +42,10 @@ func outputIsClosed() bool {
 	return isClosed == 1
 }
 
-var CliOut = color.Output
+var defaultOut = color.Output
+var CliOut = defaultOut
 var CliErr = color.Error
+var OldStdOut = os.Stdout
 
 var ExecuteWithStdioRestored func(userFunc func())
 
@@ -158,7 +160,11 @@ type EphemeralPrinter struct {
 func StartEphemeralPrinter() *EphemeralPrinter {
 	w := uilive.New()
 	w.Out = CliOut
-	w.UnderlyingFile = os.Stdout
+	// If we are using normal CliOut behavior (printing color to terminal)
+	// give access to underlying terminal.
+	if CliOut == defaultOut {
+		w.UnderlyingFile = OldStdOut
+	}
 	e := &EphemeralPrinter{outW: w, w: w}
 	e.start()
 	return e
