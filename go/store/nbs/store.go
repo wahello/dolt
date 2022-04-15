@@ -116,7 +116,7 @@ func (nbs *NomsBlockStore) GetChunkLocations(hashes hash.HashSet) (map[hash.Hash
 	f := func(css chunkSources) error {
 		for _, cs := range css {
 			switch tr := cs.(type) {
-			case *fileTableReader:
+			case *mmapTableReader:
 				offsetRecSlice, _, err := tr.findOffsets(gr)
 				if err != nil {
 					return err
