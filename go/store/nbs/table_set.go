@@ -465,22 +465,24 @@ func (ts tableSet) Rebase(ctx context.Context, specs []tableSpec, stats *Stats) 
 	var openOps []openOp
 	var memoryNeeded uint64
 
+	upstreamMap := make(map[addr]chunkSource, len(ts.upstream))
+	for _, tf := range ts.upstream {
+		h, err := tf.hash()
+		if err != nil {
+			return tableSet{}, err
+		}
+		upstreamMap[h] = tf
+	}
+
 	// Clone tables that we have already opened
-OUTER:
 	for idx, spec := range tablesToOpen {
-		for _, existing := range ts.upstream {
-			h, err := existing.hash()
+		if existing, ok := upstreamMap[spec.name]; ok {
+			c, err := existing.Clone()
 			if err != nil {
 				return tableSet{}, err
 			}
-			if spec.name == h {
-				c, err := existing.Clone()
-				if err != nil {
-					return tableSet{}, err
-				}
-				merged.upstream[idx] = c
-				continue OUTER
-			}
+			merged.upstream[idx] = c
+			continue
 		}
 		openOps = append(openOps, openOp{idx, spec})
 		memoryNeeded += indexMemSize(spec.chunkCount)
