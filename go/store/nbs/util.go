@@ -79,8 +79,19 @@ func GetTableIndexPrefixes(rd io.ReadSeeker) (prefixes []uint64, err error) {
 			err = cerr
 		}
 	}()
+	var tuples tableIndexTuples
+	tuples, err = idx.Tuples()
+	if err != nil {
+		return
+	}
 
-	return idx.Prefixes()
+	cc := int(idx.ChunkCount())
+	prefixes = make([]uint64, cc)
+	for i := 0; i < cc; i++ {
+		prefixes[i] = tuples.PrefixAt(i)
+	}
+
+	return
 }
 
 func GuessPrefixOrdinal(prefix uint64, n uint32) int {

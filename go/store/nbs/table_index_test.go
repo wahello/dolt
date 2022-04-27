@@ -94,14 +94,9 @@ func TestMMapIndex(t *testing.T) {
 			assert.False(t, found)
 		}
 	}
-	o1, err := idx.Ordinals()
+	p1, err := idx.Tuples()
 	require.NoError(t, err)
-	o2, err := mmidx.Ordinals()
-	require.NoError(t, err)
-	assert.Equal(t, o1, o2)
-	p1, err := idx.Prefixes()
-	require.NoError(t, err)
-	p2, err := mmidx.Prefixes()
+	p2, err := mmidx.Tuples()
 	require.NoError(t, err)
 	assert.Equal(t, p1, p2)
 	assert.Equal(t, idx.TableFileSize(), mmidx.TableFileSize())

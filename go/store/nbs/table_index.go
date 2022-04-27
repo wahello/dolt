@@ -34,6 +34,8 @@ var (
 	ErrWrongCopySize   = errors.New("could not copy enough bytes")
 )
 
+type tableIndexTuples []byte
+
 type tableIndex interface {
 	// ChunkCount returns the total number of chunks in the indexed file.
 	ChunkCount() uint32
@@ -48,14 +50,9 @@ type tableIndex interface {
 	// provided address |h|. Second returns is |true| if an entry exists
 	// and |false| otherwise.
 	Lookup(h *addr) (indexEntry, bool, error)
-	// Ordinals returns a slice of indexes which maps the |i|th chunk in
-	// the indexed file to its corresponding entry in index. The |i|th
-	// entry in the result is the |i|th chunk in the indexed file, and its
-	// corresponding value in the slice is the index entry that maps to it.
-	Ordinals() ([]uint32, error)
-	// Prefixes returns the sorted slice of |uint64| |addr| prefixes; each
-	// entry corresponds to an indexed chunk address.
-	Prefixes() ([]uint64, error)
+
+	Tuples() (tableIndexTuples, error)
+
 	// PrefixAt returns the prefix at the specified index
 	PrefixAt(idx uint32) uint64
 	// TableFileSize returns the total size of the indexed table file, in bytes.
@@ -381,13 +378,18 @@ func (ti onHeapTableIndex) Ordinals() ([]uint32, error) {
 	return o, nil
 }
 
-func (ti onHeapTableIndex) Prefixes() ([]uint64, error) {
-	p := make([]uint64, ti.chunkCount)
-	for i, off := uint32(0), 0; i < ti.chunkCount; i, off = i+1, off+prefixTupleSize {
-		b := ti.tupleB[off : off+addrPrefixSize]
-		p[i] = binary.BigEndian.Uint64(b)
-	}
-	return p, nil
+func (tit tableIndexTuples) PrefixAt(j int) uint64 {
+	off := j * prefixTupleSize
+	return binary.BigEndian.Uint64(tit[off:off+addrPrefixSize])
+}
+
+func (tit tableIndexTuples) OrdinalAt(j int) uint32 {
+	off := j * prefixTupleSize + addrPrefixSize
+	return binary.BigEndian.Uint32(tit[off:])
+}
+
+func (ti onHeapTableIndex) Tuples() (tableIndexTuples, error) {
+	return ti.tupleB, nil
 }
 
 func (ti onHeapTableIndex) hashAt(idx uint32) hash.Hash {

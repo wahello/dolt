@@ -132,6 +132,7 @@ type tableReaderAt interface {
 // more chunks together into a single read request to backing storage.
 type tableReader struct {
 	tableIndex
+	tuples                tableIndexTuples
 	chunkCount            uint32
 	totalUncompressedData uint64
 	r                     tableReaderAt
@@ -142,8 +143,13 @@ type tableReader struct {
 // and footer, though it may contain an unspecified number of bytes before that data. r should allow
 // retrieving any desired range of bytes from the table.
 func newTableReader(index tableIndex, r tableReaderAt, blockSize uint64) (tableReader, error) {
+	tuples, err := index.Tuples()
+	if err != nil {
+		return tableReader{}, err
+	}
 	return tableReader{
 		index,
+		tuples,
 		index.ChunkCount(),
 		index.TotalUncompressedData(),
 		r,
@@ -152,7 +158,7 @@ func newTableReader(index tableIndex, r tableReaderAt, blockSize uint64) (tableR
 }
 
 func (tr tableReader) prefixAt(idx uint32) uint64 {
-	return tr.tableIndex.PrefixAt(idx)
+	return tr.tuples.PrefixAt(int(idx))
 }
 
 // Scan across (logically) two ordered slices of address prefixes.
@@ -662,7 +668,7 @@ func (tr tableReader) Clone() (tableReader, error) {
 	if err != nil {
 		return tableReader{}, err
 	}
-	return tableReader{ti, tr.chunkCount, tr.totalUncompressedData, tr.r, tr.blockSize}, nil
+	return tableReader{ti, tr.tuples, tr.chunkCount, tr.totalUncompressedData, tr.r, tr.blockSize}, nil
 }
 
 type readerAdapter struct {

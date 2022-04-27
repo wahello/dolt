@@ -196,18 +196,15 @@ func planConjoin(sources chunkSources, stats *Stats) (plan compactionPlan, err e
 			return compactionPlan{}, err
 		}
 
-		ordinals, err := index.Ordinals()
-		if err != nil {
-			return compactionPlan{}, err
-		}
-		prefixes, err := index.Prefixes()
+		tuples, err := index.Tuples()
 		if err != nil {
 			return compactionPlan{}, err
 		}
 
 		// Add all the prefix tuples from this index to the list of all prefixIndexRecs, modifying the ordinals such that all entries from the 1st item in sources come after those in the 0th and so on.
-		for j, prefix := range prefixes {
-			rec := prefixIndexRec{prefix: prefix, order: ordinalOffset + ordinals[j]}
+		cc := int(index.ChunkCount())
+		for i := 0; i < cc; i++ {
+			rec := prefixIndexRec{prefix: tuples.PrefixAt(i), order: ordinalOffset + tuples.OrdinalAt(i)}
 			prefixIndexRecs = append(prefixIndexRecs, rec)
 		}
 
@@ -240,18 +237,19 @@ func planConjoin(sources chunkSources, stats *Stats) (plan compactionPlan, err e
 		} else {
 			// Build up the index one entry at a time.
 			var a addr
-			for i := 0; i < len(ordinals); i++ {
+			for i := 0; i < cc; i++ {
 				e, err := index.IndexEntry(uint32(i), &a)
 				if err != nil {
 					return compactionPlan{}, err
 				}
-				li := lengthsPos + lengthSize*uint64(ordinals[i])
-				si := suffixesPos + addrSuffixSize*uint64(ordinals[i])
+				ordinal := tuples.OrdinalAt(i)
+				li := lengthsPos + lengthSize*uint64(ordinal)
+				si := suffixesPos + addrSuffixSize*uint64(ordinal)
 				binary.BigEndian.PutUint32(plan.mergedIndex[li:], e.Length())
 				copy(plan.mergedIndex[si:], a[addrPrefixSize:])
 			}
-			lengthsPos += lengthSize * uint64(len(ordinals))
-			suffixesPos += addrSuffixSize * uint64(len(ordinals))
+			lengthsPos += lengthSize * uint64(cc)
+			suffixesPos += addrSuffixSize * uint64(cc)
 		}
 	}
 
