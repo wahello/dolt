@@ -34,6 +34,8 @@ var ErrColNameCollision = errors.New("two different columns with the same name e
 // ErrNoPrimaryKeyColumns is an error that is returned when no primary key columns are found
 var ErrNoPrimaryKeyColumns = errors.New("no primary key columns")
 
+var ErrNonAutoIncType = errors.New("column type cannot be auto incremented")
+
 var EmptyColColl = &ColCollection{
 	[]Column{},
 	[]uint64{},
@@ -292,10 +294,16 @@ func FilterColCollection(cc *ColCollection, cb func(col Column) bool) *ColCollec
 }
 
 func ColCollUnion(colColls ...*ColCollection) (*ColCollection, error) {
+	var allTags = make(map[uint64]bool)
 	var allCols []Column
 	for _, sch := range colColls {
 		err := sch.Iter(func(tag uint64, col Column) (stop bool, err error) {
+			// skip if already seen
+			if _, ok := allTags[tag]; ok {
+				return false, nil
+			}
 			allCols = append(allCols, col)
+			allTags[tag] = true
 			return false, nil
 		})
 

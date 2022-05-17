@@ -164,6 +164,10 @@ func DoltKeyValueAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWr
 // DoltKeyAndMappingFromSqlRow converts a sql.Row to key tuple and keeps a mapping from tag to value that
 // can be used to speed up index key generation for foreign key checks.
 func DoltKeyAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWriter, r sql.Row, doltSchema schema.Schema) (types.Tuple, map[uint64]types.Value, error) {
+	if r == nil {
+		return types.EmptyTuple(vrw.Format()), nil, sql.ErrUnexpectedNilRow.New()
+	}
+
 	allCols := doltSchema.GetAllCols()
 	pkCols := doltSchema.GetPKCols()
 
@@ -176,8 +180,6 @@ func DoltKeyAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWriter,
 		numCols = len(r)
 	}
 
-	// values for the pk tuple are in schema order
-	pkIdx := 0
 	for i := 0; i < numCols; i++ {
 		schCol := allCols.GetAtIndex(i)
 		val := r[i]
@@ -193,17 +195,17 @@ func DoltKeyAndMappingFromSqlRow(ctx context.Context, vrw types.ValueReadWriter,
 		}
 
 		tagToVal[tag] = nomsVal
-
-		if schCol.IsPartOfPK {
-			pkVals[pkIdx] = types.Uint(tag)
-			pkVals[pkIdx+1] = nomsVal
-			pkIdx += 2
-		}
 	}
 
-	// no nulls in keys
-	if pkIdx != len(pkVals) {
-		return types.Tuple{}, nil, errors.New("not all pk columns have a value")
+	pkOrds := doltSchema.GetPkOrdinals()
+	for i, pkCol := range pkCols.GetColumns() {
+		ord := pkOrds[i]
+		val := r[ord]
+		if val == nil {
+			return types.Tuple{}, nil, errors.New("not all pk columns have a value")
+		}
+		pkVals[i*2] = types.Uint(pkCol.Tag)
+		pkVals[i*2+1] = tagToVal[pkCol.Tag]
 	}
 
 	nbf := vrw.Format()
@@ -344,6 +346,8 @@ func SqlColToStr(ctx context.Context, col interface{}) string {
 			}
 		case time.Time:
 			return typedCol.Format("2006-01-02 15:04:05.999999 -0700 MST")
+		case sql.Geometry:
+			return SqlColToStr(ctx, typedCol.Inner)
 		case sql.Point:
 			buf := make([]byte, 25)
 			WriteEWKBHeader(typedCol, buf)

@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	HeadKeySuffix    = "_head"
-	HeadRefKeySuffix = "_head_ref"
-	WorkingKeySuffix = "_working"
-	StagedKeySuffix  = "_staged"
+	HeadKeySuffix          = "_head"
+	HeadRefKeySuffix       = "_head_ref"
+	WorkingKeySuffix       = "_working"
+	StagedKeySuffix        = "_staged"
+	DefaultBranchKeySuffix = "_default_branch"
 )
 
 const (
@@ -75,7 +76,7 @@ func init() {
 			Dynamic:           true,
 			SetVarHintApplies: false,
 			Type:              sql.NewSystemBoolType(AllowCommitConflicts),
-			Default:           int8(1),
+			Default:           int8(0),
 		},
 	})
 }
@@ -92,6 +93,8 @@ func defineSystemVariables(name string) {
 				Type:              sql.NewSystemStringType(HeadRefKey(name)),
 				Default:           "",
 			},
+			// The following variable are Dynamic, but read-only. Their values
+			// can only be updates by the system, not by users.
 			{
 				Name:              HeadKey(name),
 				Scope:             sql.SystemVariableScope_Session,
@@ -116,6 +119,14 @@ func defineSystemVariables(name string) {
 				Type:              sql.NewSystemStringType(StagedKey(name)),
 				Default:           "",
 			},
+			{
+				Name:              DefaultBranchKey(name),
+				Scope:             sql.SystemVariableScope_Global,
+				Dynamic:           true,
+				SetVarHintApplies: false,
+				Type:              sql.NewSystemStringType(DefaultBranchKey(name)),
+				Default:           "",
+			},
 		})
 	}
 }
@@ -134,6 +145,10 @@ func WorkingKey(dbName string) string {
 
 func StagedKey(dbName string) string {
 	return dbName + StagedKeySuffix
+}
+
+func DefaultBranchKey(dbName string) string {
+	return dbName + DefaultBranchKeySuffix
 }
 
 func IsHeadKey(key string) (bool, string) {
@@ -158,4 +173,18 @@ func IsWorkingKey(key string) (bool, string) {
 	}
 
 	return false, ""
+}
+
+func IsDefaultBranchKey(key string) (bool, string) {
+	if strings.HasSuffix(key, DefaultBranchKeySuffix) {
+		return true, key[:len(key)-len(DefaultBranchKeySuffix)]
+	}
+
+	return false, ""
+}
+
+func IsReadOnlyVersionKey(key string) bool {
+	return strings.HasSuffix(key, HeadKeySuffix) ||
+		strings.HasSuffix(key, StagedKeySuffix) ||
+		strings.HasSuffix(key, WorkingKeySuffix)
 }

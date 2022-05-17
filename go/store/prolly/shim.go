@@ -15,7 +15,6 @@
 package prolly
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/dolthub/vitess/go/vt/proto/query"
@@ -23,46 +22,38 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/store/chunks"
 	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/prolly/tree"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/val"
 )
 
-func NewEmptyMap(sch schema.Schema) Map {
-	return Map{
-		root:    emptyNode,
-		keyDesc: KeyDescriptorFromSchema(sch),
-		valDesc: ValueDescriptorFromSchema(sch),
-	}
-}
-
-// PartitionKeysFromMap naively divides the map by its top-level keys.
-func PartitionKeysFromMap(m Map) (keys []val.Tuple) {
-	keys = make([]val.Tuple, m.root.count)
-	for i := range keys {
-		keys[i] = val.Tuple(m.root.getKey(i))
-	}
-	return
-}
-
-func ValueFromNode(nd Node) types.Value {
-	return types.InlineBlob(nd.bytes())
-}
-
-func NodeFromValue(v types.Value) Node {
-	return mapNodeFromBytes(v.(types.InlineBlob))
+func NodeFromValue(v types.Value) tree.Node {
+	return tree.NodeFromBytes(v.(types.TupleRowStorage))
 }
 
 func ValueFromMap(m Map) types.Value {
-	return types.InlineBlob(m.root.bytes())
+	return tree.ValueFromNode(m.tuples.root)
+}
+
+func ValueFromConflictMap(m ConflictMap) types.Value {
+	return tree.ValueFromNode(m.conflicts.root)
 }
 
 func MapFromValue(v types.Value, sch schema.Schema, vrw types.ValueReadWriter) Map {
-	return Map{
-		root:    NodeFromValue(v),
-		keyDesc: KeyDescriptorFromSchema(sch),
-		valDesc: ValueDescriptorFromSchema(sch),
-		ns:      NewNodeStore(ChunkStoreFromVRW(vrw)),
-	}
+	root := NodeFromValue(v)
+	kd := KeyDescriptorFromSchema(sch)
+	vd := ValueDescriptorFromSchema(sch)
+	ns := tree.NewNodeStore(ChunkStoreFromVRW(vrw))
+	return NewMap(root, ns, kd, vd)
+}
+
+func ConflictMapFromValue(v types.Value, ourSchema, theirSchema, baseSchema schema.Schema, vrw types.ValueReadWriter) ConflictMap {
+	root := NodeFromValue(v)
+	kd, ourVD := MapDescriptorsFromScheam(ourSchema)
+	theirVD := ValueDescriptorFromSchema(theirSchema)
+	baseVD := ValueDescriptorFromSchema(baseSchema)
+	ns := tree.NewNodeStore(ChunkStoreFromVRW(vrw))
+	return NewConflictMap(root, ns, kd, ourVD, theirVD, baseVD)
 }
 
 func ChunkStoreFromVRW(vrw types.ValueReadWriter) chunks.ChunkStore {
@@ -75,14 +66,6 @@ func ChunkStoreFromVRW(vrw types.ValueReadWriter) chunks.ChunkStore {
 	panic("unknown ValueReadWriter")
 }
 
-func EmptyTreeChunkerFromMap(ctx context.Context, m Map) *treeChunker {
-	ch, err := newEmptyTreeChunker(ctx, m.ns, newDefaultNodeSplitter)
-	if err != nil {
-		panic(err)
-	}
-	return ch
-}
-
 func MapDescriptorsFromScheam(sch schema.Schema) (kd, vd val.TupleDesc) {
 	kd = KeyDescriptorFromSchema(sch)
 	vd = ValueDescriptorFromSchema(sch)
@@ -90,6 +73,10 @@ func MapDescriptorsFromScheam(sch schema.Schema) (kd, vd val.TupleDesc) {
 }
 
 func KeyDescriptorFromSchema(sch schema.Schema) val.TupleDesc {
+	if schema.IsKeyless(sch) {
+		return val.KeylessTupleDesc
+	}
+
 	var tt []val.Type
 	_ = sch.GetPKCols().Iter(func(tag uint64, col schema.Column) (stop bool, err error) {
 		tt = append(tt, val.Type{
@@ -112,6 +99,10 @@ func columnNullable(col schema.Column) bool {
 
 func ValueDescriptorFromSchema(sch schema.Schema) val.TupleDesc {
 	var tt []val.Type
+	if schema.IsKeyless(sch) {
+		tt = []val.Type{val.KeylessCardType}
+	}
+
 	_ = sch.GetNonPKCols().Iter(func(tag uint64, col schema.Column) (stop bool, err error) {
 		tt = append(tt, val.Type{
 			Enc:      encodingFromSqlType(col.TypeInfo.ToSqlType().Type()),
@@ -122,6 +113,7 @@ func ValueDescriptorFromSchema(sch schema.Schema) val.TupleDesc {
 	return val.NewTupleDescriptor(tt...)
 }
 
+// todo(andy): move this to typeinfo
 func encodingFromSqlType(typ query.Type) val.Encoding {
 	// todo(andy): replace temp encodings
 	switch typ {

@@ -48,6 +48,7 @@ const (
 const (
 	DiffCommitTag = iota + SystemTableReservedMin + uint64(2000)
 	DiffCommitDateTag
+	DiffTypeTag
 )
 
 // Tags for dolt_query_catalog table
@@ -77,6 +78,7 @@ const (
 	DoltSchemasTypeTag
 	DoltSchemasNameTag
 	DoltSchemasFragmentTag
+	DoltSchemasExtraTag
 )
 
 // Tags for hidden columns in keyless rows

@@ -30,6 +30,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
 	"github.com/dolthub/dolt/go/libraries/utils/test"
+	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -100,7 +101,7 @@ func createTestRowDataFromTaggedValues(t *testing.T, vrw types.ValueReadWriter, 
 	ed := m.Edit()
 
 	for i, val := range vals {
-		r, err := row.New(types.Format_Default, sch, val)
+		r, err := row.New(vrw.Format(), sch, val)
 		require.NoError(t, err)
 		rows[i] = r
 		ed = ed.Set(r.NomsMapKey(sch), r.NomsMapValue(sch))
@@ -122,7 +123,6 @@ func TestIsValidTableName(t *testing.T) {
 	assert.False(t, IsValidTableName("-"))
 	assert.False(t, IsValidTableName("-a"))
 	assert.False(t, IsValidTableName(""))
-	assert.False(t, IsValidTableName("1a"))
 	assert.False(t, IsValidTableName("a1-"))
 	assert.False(t, IsValidTableName("ab!!c"))
 }
@@ -165,6 +165,7 @@ func TestSystemTableTags(t *testing.T) {
 		assert.Equal(t, doltSchemasMin+1, schema.DoltSchemasTypeTag)
 		assert.Equal(t, doltSchemasMin+2, schema.DoltSchemasNameTag)
 		assert.Equal(t, doltSchemasMin+3, schema.DoltSchemasFragmentTag)
+		assert.Equal(t, doltSchemasMin+4, schema.DoltSchemasExtraTag)
 	})
 }
 
@@ -263,14 +264,14 @@ func TestLDNoms(t *testing.T) {
 			t.Fatal("Couldn't find commit")
 		}
 
-		meta, err := commit.GetCommitMeta()
+		meta, err := commit.GetCommitMeta(context.Background())
 		assert.NoError(t, err)
 
 		if meta.Name != committerName || meta.Email != committerEmail {
 			t.Error("Unexpected metadata")
 		}
 
-		root, err := commit.GetRootValue()
+		root, err := commit.GetRootValue(context.Background())
 
 		assert.NoError(t, err)
 
@@ -291,10 +292,10 @@ func TestLDNoms(t *testing.T) {
 		root, err = root.PutTable(context.Background(), "test", tbl)
 		assert.NoError(t, err)
 
-		valHash, err = ddb.WriteRootValue(context.Background(), root)
+		root, valHash, err = ddb.WriteRootValue(context.Background(), root)
 		assert.NoError(t, err)
 
-		meta, err = NewCommitMeta(committerName, committerEmail, "Sample data")
+		meta, err = datas.NewCommitMeta(committerName, committerEmail, "Sample data")
 		if err != nil {
 			t.Error("Failed to commit")
 		}
@@ -311,7 +312,7 @@ func TestLDNoms(t *testing.T) {
 			t.Error("Unexpected ancestry")
 		}
 
-		root, err = commit.GetRootValue()
+		root, err = commit.GetRootValue(context.Background())
 		assert.NoError(t, err)
 
 		readTable, ok, err := root.GetTable(context.Background(), "test")

@@ -30,7 +30,7 @@ const indexLookupBufSize = 1024
 
 type prollyIndexIter struct {
 	idx       DoltIndex
-	indexIter prolly.MapRangeIter
+	indexIter prolly.MapIter
 	primary   prolly.Map
 
 	// pkMap transforms indexRows index keys
@@ -47,16 +47,17 @@ type prollyIndexIter struct {
 }
 
 var _ sql.RowIter = prollyIndexIter{}
+var _ sql.RowIter2 = prollyIndexIter{}
 
 // NewProllyIndexIter returns a new prollyIndexIter.
-func newProllyIndexIter(ctx *sql.Context, idx DoltIndex, rng prolly.Range, projection []string) (prollyIndexIter, error) {
-	secondary := durable.ProllyMapFromIndex(idx.IndexRowData())
+func newProllyIndexIter(ctx *sql.Context, idx DoltIndex, rng prolly.Range, dprimary, dsecondary durable.Index) (prollyIndexIter, error) {
+	secondary := durable.ProllyMapFromIndex(dsecondary)
 	indexIter, err := secondary.IterRange(ctx, rng)
 	if err != nil {
 		return prollyIndexIter{}, err
 	}
 
-	primary := durable.ProllyMapFromIndex(idx.TableData())
+	primary := durable.ProllyMapFromIndex(dprimary)
 	kd, _ := primary.Descriptors()
 	pkBld := val.NewTupleBuilder(kd)
 	pkMap := ordinalMappingFromIndex(idx)
@@ -105,6 +106,10 @@ func (p prollyIndexIter) Next(ctx *sql.Context) (r sql.Row, err error) {
 	return nil, io.EOF
 }
 
+func (p prollyIndexIter) Next2(ctx *sql.Context, frame *sql.RowFrame) error {
+	panic("unimplemented")
+}
+
 func (p prollyIndexIter) queueRows(ctx context.Context) error {
 	defer close(p.rowChan)
 
@@ -121,9 +126,8 @@ func (p prollyIndexIter) queueRows(ctx context.Context) error {
 		pk := p.pkBld.Build(sharePool)
 
 		r := make(sql.Row, len(p.keyMap)+len(p.valMap))
-		err = p.primary.Get(ctx, pk, func(key, value val.Tuple) (err error) {
-			p.rowFromTuples(key, value, r)
-			return
+		err = p.primary.Get(ctx, pk, func(key, value val.Tuple) error {
+			return p.rowFromTuples(key, value, r)
 		})
 		if err != nil {
 			return err
@@ -193,22 +197,22 @@ func ordinalMappingFromIndex(idx DoltIndex) (m val.OrdinalMapping) {
 
 type prollyCoveringIndexIter struct {
 	idx       DoltIndex
-	indexIter prolly.MapRangeIter
+	indexIter prolly.MapIter
 	keyDesc   val.TupleDesc
 	valDesc   val.TupleDesc
 
 	// keyMap transforms secondary index key tuples into SQL tuples.
 	// secondary index value tuples are assumed to be empty.
-	// todo(andy): shore up this mapping concept, different semantics different places
 
 	// |keyMap| and |valMap| are both of len ==
 	keyMap, valMap val.OrdinalMapping
 }
 
 var _ sql.RowIter = prollyCoveringIndexIter{}
+var _ sql.RowIter2 = prollyCoveringIndexIter{}
 
-func newProllyCoveringIndexIter(ctx *sql.Context, idx DoltIndex, rng prolly.Range, pkSch sql.PrimaryKeySchema) (prollyCoveringIndexIter, error) {
-	secondary := durable.ProllyMapFromIndex(idx.IndexRowData())
+func newProllyCoveringIndexIter(ctx *sql.Context, idx DoltIndex, rng prolly.Range, pkSch sql.PrimaryKeySchema, indexdata durable.Index) (prollyCoveringIndexIter, error) {
+	secondary := durable.ProllyMapFromIndex(indexdata)
 	indexIter, err := secondary.IterRange(ctx, rng)
 	if err != nil {
 		return prollyCoveringIndexIter{}, err
@@ -239,9 +243,6 @@ func newProllyCoveringIndexIter(ctx *sql.Context, idx DoltIndex, rng prolly.Rang
 // Next returns the next row from the iterator.
 func (p prollyCoveringIndexIter) Next(ctx *sql.Context) (sql.Row, error) {
 	k, v, err := p.indexIter.Next(ctx)
-	if err == io.EOF {
-		return nil, io.EOF
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +253,15 @@ func (p prollyCoveringIndexIter) Next(ctx *sql.Context) (sql.Row, error) {
 	}
 
 	return r, nil
+}
+
+func (p prollyCoveringIndexIter) Next2(ctx *sql.Context, f *sql.RowFrame) error {
+	k, v, err := p.indexIter.Next(ctx)
+	if err != nil {
+		return err
+	}
+
+	return p.writeRow2FromTuples(k, v, f)
 }
 
 func (p prollyCoveringIndexIter) writeRowFromTuples(key, value val.Tuple, r sql.Row) (err error) {
@@ -280,11 +290,42 @@ func (p prollyCoveringIndexIter) writeRowFromTuples(key, value val.Tuple, r sql.
 	return
 }
 
+func (p prollyCoveringIndexIter) writeRow2FromTuples(key, value val.Tuple, f *sql.RowFrame) (err error) {
+
+	// TODO: handle out of order projections
+	for to := range p.keyMap {
+		from := p.keyMap.MapOrdinal(to)
+		if from == -1 {
+			continue
+		}
+
+		enc := p.keyDesc.Types[from].Enc
+		f.Append(sql.Value{
+			Typ: encodingToType[enc],
+			Val: p.keyDesc.GetField(from, key),
+		})
+	}
+
+	for to := range p.valMap {
+		from := p.valMap.MapOrdinal(to)
+		if from == -1 {
+			continue
+		}
+
+		enc := p.valDesc.Types[from].Enc
+		f.Append(sql.Value{
+			Typ: encodingToType[enc],
+			Val: p.valDesc.GetField(from, value),
+		})
+	}
+
+	return
+}
+
 func (p prollyCoveringIndexIter) Close(*sql.Context) error {
 	return nil
 }
 
-// todo(andy): there are multiple column mapping concepts with different semantics
 func coveringIndexMapping(idx DoltIndex, pkSch sql.PrimaryKeySchema) (keyMap val.OrdinalMapping) {
 	allCols := idx.Schema().GetAllCols()
 	idxCols := idx.IndexSchema().GetAllCols()

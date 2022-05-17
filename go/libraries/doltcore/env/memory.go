@@ -25,6 +25,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"github.com/dolthub/dolt/go/libraries/utils/config"
 	"github.com/dolthub/dolt/go/store/chunks"
+	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/hash"
 )
 
@@ -56,7 +57,7 @@ func NewMemoryDoltDB(ctx context.Context, initBranch string) (*doltdb.DoltDB, er
 
 	m := "memory"
 	branchRef := ref.NewBranchRef(initBranch)
-	err := ddb.WriteEmptyRepoWithCommitTimeAndDefaultBranch(ctx, m, m, doltdb.CommitNowFunc(), branchRef)
+	err := ddb.WriteEmptyRepoWithCommitTimeAndDefaultBranch(ctx, m, m, datas.CommitNowFunc(), branchRef)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +77,7 @@ func NewMemoryRepoState(ctx context.Context, ddb *doltdb.DoltDB, initBranch stri
 		return MemoryRepoState{}, err
 	}
 
-	root, err := commit.GetRootValue()
+	root, err := commit.GetRootValue(ctx)
 	if err != nil {
 		return MemoryRepoState{}, err
 	}
@@ -181,8 +182,8 @@ func (m MemoryRepoState) WorkingSet(ctx context.Context) (*doltdb.WorkingSet, er
 	return workingSet, nil
 }
 
-func (m MemoryRepoState) workingSetMeta() *doltdb.WorkingSetMeta {
-	return &doltdb.WorkingSetMeta{
+func (m MemoryRepoState) workingSetMeta() *datas.WorkingSetMeta {
+	return &datas.WorkingSetMeta{
 		Timestamp:   uint64(time.Now().Unix()),
 		Description: "updated from dolt environment",
 	}

@@ -90,6 +90,7 @@ teardown() {
     cd repo1
     dolt config --local --add sqlserver.global.dolt_replicate_to_remote backup1
     dolt sql -q "create table t1 (a int primary key)"
+    dolt add -A
     dolt sql -q "UPDATE dolt_branches SET hash = COMMIT('--author', '{user_name} <{email_address}>','-m', 'cm') WHERE name = 'main' AND hash = @@repo1_head"
 
     cd ..
@@ -391,4 +392,13 @@ teardown() {
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 2 ]
     [[ "$output" =~ "t1" ]] || false
+}
+
+@test "replication: local clone" {
+    run dolt clone file://./repo1/.dolt/noms repo2
+    [ "$status" -eq 0 ]
+    cd repo2
+    run dolt ls
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
 }

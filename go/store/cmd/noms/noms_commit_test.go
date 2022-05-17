@@ -89,22 +89,20 @@ func (s *nomsCommitTestSuite) TestNomsCommitReadPathFromStdin() {
 	sp, _ = spec.ForDataset(sp.String())
 	defer sp.Close()
 
+	vrw := sp.GetVRW(context.Background())
 	commit, ok := sp.GetDataset(context.Background()).MaybeHead()
 	s.True(ok, "should have a commit now")
-	value, ok, err := commit.MaybeGet(datas.ValueField)
+	value, err := datas.GetCommittedValue(context.Background(), vrw, commit)
 	s.NoError(err)
-	s.True(ok)
-	h, err := value.Hash(types.Format_7_18)
+	s.NotNil(value)
+	h, err := value.Hash(vrw.Format())
 	s.NoError(err)
 	s.True(h == ref.TargetHash(), "commit.value hash == writevalue hash")
 
-	meta, ok, err := commit.MaybeGet(datas.CommitMetaField)
+	meta, err := datas.GetCommitMeta(context.Background(), commit)
 	s.NoError(err)
-	s.True(ok)
-	d, ok, err := meta.(types.Struct).MaybeGet("date")
-	s.NoError(err)
-	s.True(ok)
-	s.NotEmpty(d)
+	s.NotNil(meta)
+	s.NotEqual(meta.Timestamp, 0)
 }
 
 func (s *nomsCommitTestSuite) TestNomsCommitToDatasetWithoutHead() {
@@ -121,23 +119,19 @@ func (s *nomsCommitTestSuite) TestNomsCommitToDatasetWithoutHead() {
 	sp, _ = spec.ForDataset(sp.String())
 	defer sp.Close()
 
+	vrw := sp.GetVRW(context.Background())
 	commit, ok := sp.GetDataset(context.Background()).MaybeHead()
 	s.True(ok, "should have a commit now")
-	value, ok, err := commit.MaybeGet(datas.ValueField)
+	value, err := datas.GetCommittedValue(context.Background(), vrw, commit)
 	s.NoError(err)
-	s.True(ok)
-	h, err := value.Hash(types.Format_7_18)
+	s.NotNil(value)
+	h, err := value.Hash(vrw.Format())
 	s.NoError(err)
 	s.True(h == ref.TargetHash(), "commit.value hash == writevalue hash")
 
-	metaVal, ok, err := commit.MaybeGet(datas.CommitMetaField)
+	meta, err := datas.GetCommitMeta(context.Background(), commit)
 	s.NoError(err)
-	s.True(ok)
-	meta := metaVal.(types.Struct)
-	d, ok, err := meta.MaybeGet("date")
-	s.NoError(err)
-	s.True(ok)
-	s.NotEmpty(d)
+	s.NotEqual(meta.Timestamp, 0)
 }
 
 func structFieldEqual(old, now types.Struct, field string) bool {
@@ -175,13 +169,14 @@ func (s *nomsCommitTestSuite) runDuplicateTest(allowDuplicate bool) {
 
 	sp, _ = spec.ForDataset(sp.String())
 	defer sp.Close()
+	vrw := sp.GetVRW(context.Background())
 
 	value, ok, err := sp.GetDataset(context.Background()).MaybeHeadValue()
 	s.NoError(err)
 	s.True(ok, "should still have a commit")
-	valH, err := value.Hash(types.Format_7_18)
+	valH, err := value.Hash(vrw.Format())
 	s.NoError(err)
-	refH, err := ref.Hash(types.Format_7_18)
+	refH, err := ref.Hash(vrw.Format())
 	s.NoError(err)
 	s.True(valH == refH, "commit.value hash == previous commit hash")
 }
@@ -198,10 +193,9 @@ func (s *nomsCommitTestSuite) TestNomsCommitMetadata() {
 
 	dsHead, ok := sp.GetDataset(context.Background()).MaybeHead()
 	s.True(ok)
-	metaOldVal, ok, err := dsHead.MaybeGet(datas.CommitMetaField)
+	metaOld, err := datas.GetCommitMeta(context.Background(), dsHead)
 	s.NoError(err)
-	s.True(ok)
-	metaOld := metaOldVal.(types.Struct)
+	s.NotNil(metaOld)
 
 	stdoutString, stderrString, errI := s.Run(main, []string{"commit", "--allow-dupe=1", "--message=foo", dsName + ".value", sp.String()})
 	s.Nil(errI)
@@ -213,22 +207,18 @@ func (s *nomsCommitTestSuite) TestNomsCommitMetadata() {
 
 	dsHead, ok = sp.GetDataset(context.Background()).MaybeHead()
 	s.True(ok)
-	metaNewVal, ok, err := dsHead.MaybeGet(datas.CommitMetaField)
+	metaNew, err := datas.GetCommitMeta(context.Background(), dsHead)
 	s.NoError(err)
-	s.True(ok)
-	metaNew := metaNewVal.(types.Struct)
+	s.NotNil(metaNew)
 
-	s.False(metaOld.Equals(metaNew), "meta didn't change")
-	s.False(structFieldEqual(metaOld, metaNew, "date"), "date didn't change")
-	s.False(structFieldEqual(metaOld, metaNew, "message"), "message didn't change")
-	msgVal, ok, err := metaNew.MaybeGet("message")
-	s.NoError(err)
-	s.True(ok)
-	s.True(msgVal.Equals(types.String("foo")), "message wasn't set")
+	s.NotEqual(metaOld, metaNew, "meta didn't change")
+	s.NotEqual(metaOld.Timestamp, metaNew.Timestamp, "date didn't change")
+	s.NotEqual(metaOld.Description, metaNew.Description, "message didn't change")
+	s.NotEmpty(metaNew.Description, "desc wasn't set")
 
 	metaOld = metaNew
 
-	stdoutString, stderrString = s.MustRun(main, []string{"commit", "--allow-dupe=1", "--meta=message=bar", "--date=" + spec.CommitMetaDateFormat[:20], dsName + ".value", sp.String()})
+	stdoutString, stderrString = s.MustRun(main, []string{"commit", "--allow-dupe=1", "--message=bar", "--date=" + spec.CommitMetaDateFormat[:20], dsName + ".value", sp.String()})
 	s.Empty(stderrString)
 	s.Contains(stdoutString, "New head #")
 
@@ -237,19 +227,15 @@ func (s *nomsCommitTestSuite) TestNomsCommitMetadata() {
 
 	dsHead, ok = sp.GetDataset(context.Background()).MaybeHead()
 	s.True(ok)
-	metaNewVal, ok, err = dsHead.MaybeGet(datas.CommitMetaField)
-	s.NoError(err)
-	s.True(ok)
-	metaNew = metaNewVal.(types.Struct)
 
-	s.False(metaOld.Equals(metaNew), "meta didn't change")
-	s.False(structFieldEqual(metaOld, metaNew, "date"), "date didn't change")
-	s.False(structFieldEqual(metaOld, metaNew, "message"), "message didn't change")
-
-	msgVal, ok, err = metaNew.MaybeGet("message")
+	metaNew, err = datas.GetCommitMeta(context.Background(), dsHead)
 	s.NoError(err)
-	s.True(ok)
-	s.True(msgVal.Equals(types.String("bar")), "message wasn't set")
+	s.NotNil(metaNew)
+
+	s.NotEqual(metaOld, metaNew, "meta didn't change")
+	s.NotEqual(metaOld.Timestamp, metaNew.Timestamp, "date didn't change")
+	s.NotEqual(metaOld.Description, metaNew.Description, "message didn't change")
+	s.NotEmpty(metaNew.Description, "message wasn't set")
 }
 
 func (s *nomsCommitTestSuite) TestNomsCommitHashNotFound() {
@@ -267,23 +253,5 @@ func (s *nomsCommitTestSuite) TestNomsCommitMetadataBadDateFormat() {
 
 	s.Panics(func() {
 		s.MustRun(main, []string{"commit", "--allow-dupe=1", "--date=a", "#" + ref.TargetHash().String(), sp.String()})
-	})
-}
-
-func (s *nomsCommitTestSuite) TestNomsCommitInvalidMetadataPaths() {
-	sp, ref := s.setupDataset("commitTestMetadataPaths", true)
-	defer sp.Close()
-
-	s.Panics(func() {
-		s.MustRun(main, []string{"commit", "--allow-dupe=1", "--meta-p=#beef", "#" + ref.TargetHash().String(), sp.String()})
-	})
-}
-
-func (s *nomsCommitTestSuite) TestNomsCommitInvalidMetadataFieldName() {
-	sp, ref := s.setupDataset("commitTestMetadataFields", true)
-	defer sp.Close()
-
-	s.Panics(func() {
-		s.MustRun(main, []string{"commit", "--allow-dupe=1", "--meta=_foo=bar", "#" + ref.TargetHash().String(), sp.String()})
 	})
 }

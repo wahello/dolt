@@ -3,6 +3,7 @@ load $BATS_TEST_DIRNAME/helper/common.bash
 
 remotesrv_pid=
 setup() {
+    skip_nbf_dolt_1
     skiponwindows "tests are flaky on Windows"
     setup_common
     cd $BATS_TMPDIR
@@ -23,6 +24,85 @@ teardown() {
 
 @test "remotes: dolt remotes server is running" {
     ps -p $remotesrv_pid | grep remotesrv
+}
+
+@test "remotes: pull also fetches" {
+    mkdir remote
+    mkdir repo1
+
+    cd repo1
+    dolt init
+    dolt remote add origin file://../remote
+    dolt push origin main
+
+    cd ..
+    dolt clone file://./remote repo2
+
+    cd repo2
+    run dolt branch -va
+    [[ "$output" =~ "main" ]] || false
+    [[ ! "$output" =~ "other" ]] || false
+
+    cd ../repo1
+    dolt checkout -b other
+    dolt push origin other
+
+    cd ../repo2
+    dolt pull
+    run dolt branch -va
+    [[ "$output" =~ "main" ]] || false
+    [[ "$output" =~ "other" ]] || false
+}
+
+@test "remotes: pull also fetches, but does not merge other branches" {
+    mkdir remote
+
+    cd remote
+    dolt init
+    dolt commit --allow-empty -m "first commit on main"
+    dolt branch other
+    dolt commit --allow-empty -m "second commit on main"
+
+    cd ..
+    dolt clone file://./remote/.dolt/noms local
+
+    cd local
+    run dolt pull
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Everything up-to-date." ]] || false
+
+    run dolt log --oneline -n 1
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "second commit on main" ]] || false
+
+    dolt checkout other
+    run dolt log --oneline -n 1
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "first commit on main" ]] || false
+
+    cd ../remote
+    dolt checkout other
+    dolt commit --allow-empty -m "first commit on other"
+
+    cd ../local
+    dolt checkout main
+    run dolt pull
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Everything up-to-date." ]] || false
+
+    dolt checkout other
+    run dolt log --oneline -n 1
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "first commit on main" ]] || false
+
+    run dolt pull
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Updating" ]] || false
+    [[ "$output" =~ "Fast-forward" ]] || false
+
+    run dolt log --oneline -n 1
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "first commit on other" ]] || false
 }
 
 @test "remotes: add a remote using dolt remote" {
@@ -174,7 +254,7 @@ SQL
     [[ "$output" =~ "v1" ]] || false
 }
 
-@test "remotes: tags are only pulled if their commit is pulled" {
+@test "remotes: tags are fetched when pulling" {
     dolt remote add test-remote http://localhost:50051/test-org/test-repo
     dolt sql <<SQL
 CREATE TABLE test (pk int PRIMARY KEY);
@@ -199,11 +279,6 @@ SQL
     cd dolt-repo-clones/test-repo
     run dolt pull
     [ "$status" -eq 0 ]
-    run dolt tag
-    [ "$status" -eq 0 ]
-    [[ "$output" =~ "v1" ]] || false
-    [[ ! "$output" =~ "other_tag" ]] || false
-    dolt fetch
     run dolt tag -v
     [ "$status" -eq 0 ]
     [[ "$output" =~ "v1" ]] || false
@@ -517,11 +592,9 @@ SQL
     cd test-repo
     run dolt fetch
     [ "$status" -eq 0 ]
-    [ "${#lines[@]}" -eq 4 ]
-    [ "${lines[0]}" != "" ]
-    [ "${lines[1]}" != "" ]
-    [ "${lines[2]}" != "" ]
-    [ "${lines[3]}" != "" ]
+    # The number of $lines and $output printed is non-deterministic
+    # due to EphemeralPrinter. We can't test for their length here.
+    [ "$output" != "" ]
 
     run dolt fetch
     [ "$status" -eq 0 ]
@@ -1464,4 +1537,89 @@ setup_ref_test() {
     [ "$status" -eq 1 ]
     dolt push --set-upstream origin feature
     dolt push
+}
+
+@test "remotes: clone local repo with file url" {
+    mkdir repo1
+    cd repo1
+    dolt init
+    dolt commit --allow-empty -am "commit from repo1"
+
+    cd ..
+    dolt clone file://./repo1/.dolt/noms repo2
+    cd repo2
+    run dolt log
+    [[ "$output" =~ "commit from repo1" ]] || false
+
+    run dolt status
+    [[ "$output" =~ "nothing to commit, working tree clean" ]] || false
+
+    dolt commit --allow-empty -am "commit from repo2"
+    dolt push
+
+    cd ../repo1
+    run dolt log
+    [[ "$output" =~ "commit from repo1" ]]
+    [[ "$output" =~ "commit from repo2" ]]
+}
+
+@test "remotes: clone local repo with absolute file path" {
+    skiponwindows "absolute paths don't work on windows"
+    mkdir repo1
+    cd repo1
+    dolt init
+    dolt commit --allow-empty -am "commit from repo1"
+
+    cd ..
+    dolt clone file://$(pwd)/repo1/.dolt/noms repo2
+    cd repo2
+    run dolt log
+    [[ "$output" =~ "commit from repo1" ]] || false
+
+    run dolt status
+    [[ "$output" =~ "nothing to commit, working tree clean" ]] || false
+
+    dolt commit --allow-empty -am "commit from repo2"
+    dolt push
+
+    cd ../repo1
+    run dolt log
+    [[ "$output" =~ "commit from repo1" ]]
+    [[ "$output" =~ "commit from repo2" ]]
+}
+
+@test "remotes: local clone does not contain working set changes" {
+    mkdir repo1
+    cd repo1
+    dolt init
+    run dolt sql -q "create table t (i int)"
+    [ "$status" -eq 0 ]
+    run dolt status
+    [[ "$output" =~ "new table:" ]] || false
+
+    cd ..
+    dolt clone file://./repo1/.dolt/noms repo2
+    cd repo2
+
+    run dolt status
+    [[ "$output" =~ "nothing to commit, working tree clean" ]] || false
+}
+
+@test "remotes: local clone pushes to other branch" {
+    mkdir repo1
+    cd repo1
+    dolt init
+
+    cd ..
+    dolt clone file://./repo1/.dolt/noms repo2
+    cd repo2
+    dolt checkout -b other
+    dolt sql -q "create table t (i int)"
+    dolt commit -am "adding table from other"
+    dolt push origin other
+
+    cd ../repo1
+    dolt checkout other
+    run dolt log
+    [[ "$output" =~ "adding table from other" ]]
 }

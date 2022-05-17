@@ -335,7 +335,7 @@ DELIM
 
     run dolt table import -r test 1pk5col-ints-updt.csv
     [ "$status" -eq 0 ]
-    [[ "$output" =~ "Rows Processed: 1, Additions: 0, Modifications: 1, Had No Effect: 0" ]] || false
+    [[ "$output" =~ "Rows Processed: 1, Additions: 1, Modifications: 0, Had No Effect: 0" ]] || false
     [[ "$output" =~ "Import completed successfully." ]] || false
 
     run dolt sql -r csv -q "select * from test"
@@ -368,4 +368,35 @@ DELIM
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 2 ]
     [ "${lines[1]}" = "0,1,2,3" ]
+}
+
+@test "import-replace-tables: Replace that breaks fk constraints correctly errors" {
+    dolt sql <<SQL
+CREATE TABLE colors (
+    id INT NOT NULL,
+    color VARCHAR(32) NOT NULL,
+
+    PRIMARY KEY (id),
+    INDEX color_index(color)
+);
+CREATE TABLE objects (
+    id INT NOT NULL,
+    name VARCHAR(64) NOT NULL,
+    color VARCHAR(32),
+
+    PRIMARY KEY(id),
+    FOREIGN KEY (color) REFERENCES colors(color)
+);
+INSERT INTO colors (id,color) VALUES (1,'red'),(2,'green'),(3,'blue'),(4,'purple');
+INSERT INTO objects (id,name,color) VALUES (1,'truck','red'),(2,'ball','green'),(3,'shoe','blue');
+SQL
+
+    cat <<DELIM > colors-bad.csv
+id,name
+1,'red'
+DELIM
+
+    run dolt table import -r colors colors-bad.csv
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ "cannot truncate table colors as it is referenced in foreign key" ]] || false
 }

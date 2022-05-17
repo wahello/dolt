@@ -22,6 +22,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dolthub/dolt/go/store/prolly/message"
+	"github.com/dolthub/dolt/go/store/prolly/tree"
 	"github.com/dolthub/dolt/go/store/val"
 )
 
@@ -50,6 +52,9 @@ func TestMutableMapReads(t *testing.T) {
 			t.Run("iter prefix range", func(t *testing.T) {
 				testIterPrefixRange(t, mutableMap, tuples)
 			})
+			t.Run("iter ordinal range", func(t *testing.T) {
+				t.Skip("todo(andy)")
+			})
 
 			mutableIndex, idxTuples := makeMutableSecondaryIndex(t, s)
 			t.Run("iter prefix range", func(t *testing.T) {
@@ -65,6 +70,9 @@ func TestMutableMapReads(t *testing.T) {
 			})
 			t.Run("iter range with pending deletes", func(t *testing.T) {
 				testIterRange(t, mutableMap2, tuples2)
+			})
+			t.Run("iter ordinal range", func(t *testing.T) {
+				t.Skip("todo(andy)")
 			})
 
 			mutableIndex2, idxTuples2, _ := deleteFromMutableMap(mutableIndex.(MutableMap), idxTuples)
@@ -83,6 +91,9 @@ func TestMutableMapReads(t *testing.T) {
 			t.Run("iter range after deletes applied", func(t *testing.T) {
 				testIterRange(t, prollyMap, tuples2)
 			})
+			t.Run("iter ordinal range", func(t *testing.T) {
+				t.Skip("todo(andy)")
+			})
 
 			prollyIndex, err := mutableIndex2.Map(context.Background())
 			require.NoError(t, err)
@@ -93,9 +104,9 @@ func TestMutableMapReads(t *testing.T) {
 	}
 }
 
-func makeMutableMap(t *testing.T, count int) (orderedMap, [][2]val.Tuple) {
+func makeMutableMap(t *testing.T, count int) (testMap, [][2]val.Tuple) {
 	ctx := context.Background()
-	ns := newTestNodeStore()
+	ns := tree.NewTestNodeStore()
 
 	kd := val.NewTupleDescriptor(
 		val.Type{Enc: val.Uint32Enc, Nullable: false},
@@ -106,36 +117,29 @@ func makeMutableMap(t *testing.T, count int) (orderedMap, [][2]val.Tuple) {
 		val.Type{Enc: val.Uint32Enc, Nullable: true},
 	)
 
-	tuples := randomTuplePairs(count, kd, vd)
+	tuples := tree.RandomTuplePairs(count, kd, vd)
 	// 2/3 of tuples in Map
 	// 1/3 of tuples in memoryMap
-	clone := cloneRandomTuples(tuples)
+	clone := tree.CloneRandomTuples(tuples)
 	split := (count * 2) / 3
-	shuffleTuplePairs(clone)
+	tree.ShuffleTuplePairs(clone)
 
 	mapTuples := clone[:split]
 	memTuples := clone[split:]
-	sortTuplePairs(mapTuples, kd)
-	sortTuplePairs(memTuples, kd)
+	tree.SortTuplePairs(mapTuples, kd)
+	tree.SortTuplePairs(memTuples, kd)
 
-	chunker, err := newEmptyTreeChunker(ctx, ns, newDefaultNodeSplitter)
+	serializer := message.ProllyMapSerializer{Pool: ns.Pool()}
+	chunker, err := tree.NewEmptyChunker(ctx, ns, serializer)
 	require.NoError(t, err)
 	for _, pair := range mapTuples {
-		_, err := chunker.Append(ctx, nodeItem(pair[0]), nodeItem(pair[1]))
+		err = chunker.AddPair(ctx, tree.Item(pair[0]), tree.Item(pair[1]))
 		require.NoError(t, err)
 	}
 	root, err := chunker.Done(ctx)
 	require.NoError(t, err)
 
-	mut := MutableMap{
-		prolly: Map{
-			root:    root,
-			keyDesc: kd,
-			valDesc: vd,
-			ns:      ns,
-		},
-		overlay: newMemoryMap(kd),
-	}
+	mut := newMutableMap(NewMap(root, ns, kd, vd))
 
 	for _, pair := range memTuples {
 		err = mut.Put(ctx, pair[0], pair[1])
@@ -145,7 +149,7 @@ func makeMutableMap(t *testing.T, count int) (orderedMap, [][2]val.Tuple) {
 	return mut, tuples
 }
 
-func makeMutableSecondaryIndex(t *testing.T, count int) (orderedMap, [][2]val.Tuple) {
+func makeMutableSecondaryIndex(t *testing.T, count int) (testMap, [][2]val.Tuple) {
 	m, tuples := makeProllySecondaryIndex(t, count)
 	return newMutableMap(m.(Map)), tuples
 }
@@ -162,7 +166,7 @@ func deleteFromMutableMap(mut MutableMap, tt [][2]val.Tuple) (MutableMap, [][2]v
 	// re-sort the remaining tuples
 	remaining := tt[count/4:]
 	desc := keyDescFromMap(mut)
-	sortTuplePairs(remaining, desc)
+	tree.SortTuplePairs(remaining, desc)
 
 	ctx := context.Background()
 	for _, kv := range deletes {

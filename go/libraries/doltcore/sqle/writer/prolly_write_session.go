@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/globalstate"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/sqlutil"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/editor"
@@ -29,16 +30,16 @@ import (
 // prollyWriteSession handles all edit operations on a table that may also update other tables.
 // Serves as coordination for SessionedTableEditors.
 type prollyWriteSession struct {
-	root *doltdb.RootValue
-
-	tables map[string]*prollyTableWriter
-	mut    *sync.RWMutex
+	workingSet *doltdb.WorkingSet
+	tables     map[string]*prollyTableWriter
+	tracker    globalstate.AutoIncrementTracker
+	mut        *sync.RWMutex
 }
 
 var _ WriteSession = &prollyWriteSession{}
 
 // GetTableWriter implemented WriteSession.
-func (s *prollyWriteSession) GetTableWriter(ctx context.Context, table string, database string, ait globalstate.AutoIncrementTracker, setter SessionRootSetter, batched bool) (TableWriter, error) {
+func (s *prollyWriteSession) GetTableWriter(ctx context.Context, table, db string, setter SessionRootSetter, batched bool) (TableWriter, error) {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
@@ -46,7 +47,7 @@ func (s *prollyWriteSession) GetTableWriter(ctx context.Context, table string, d
 		return tw, nil
 	}
 
-	t, ok, err := s.root.GetTable(ctx, table)
+	t, ok, err := s.workingSet.WorkingRoot().GetTable(ctx, table)
 	if err != nil {
 		return nil, err
 	}
@@ -58,14 +59,18 @@ func (s *prollyWriteSession) GetTableWriter(ctx context.Context, table string, d
 	if err != nil {
 		return nil, err
 	}
-	autoCol := autoIncrementColFromSchema(sch)
-
 	pkSch, err := sqlutil.FromDoltSchema(table, sch)
 	if err != nil {
 		return nil, err
 	}
+	autoCol := autoIncrementColFromSchema(sch)
 
-	pw, err := getPrimaryProllyWriter(ctx, t, pkSch.Schema, sch)
+	var pw indexWriter
+	if schema.IsKeyless(sch) {
+		pw, err = getKeylessProllyWriter(ctx, t, pkSch.Schema, sch)
+	} else {
+		pw, err = getPrimaryProllyWriter(ctx, t, pkSch.Schema, sch)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -77,14 +82,15 @@ func (s *prollyWriteSession) GetTableWriter(ctx context.Context, table string, d
 
 	twr := &prollyTableWriter{
 		tableName: table,
-		dbName:    database,
+		dbName:    db,
 		primary:   pw,
 		secondary: sws,
 		tbl:       t,
 		sch:       sch,
+		sqlSch:    pkSch.Schema,
 		aiCol:     autoCol,
-		aiTracker: ait,
-		sess:      s,
+		aiTracker: s.tracker,
+		flusher:   s,
 		setter:    setter,
 		batched:   batched,
 	}
@@ -94,23 +100,21 @@ func (s *prollyWriteSession) GetTableWriter(ctx context.Context, table string, d
 }
 
 // Flush implemented WriteSession.
-func (s *prollyWriteSession) Flush(ctx context.Context) (*doltdb.RootValue, error) {
+func (s *prollyWriteSession) Flush(ctx context.Context) (*doltdb.WorkingSet, error) {
 	s.mut.Lock()
 	defer s.mut.Unlock()
-
 	return s.flush(ctx)
 }
 
-// SetRoot implemented WriteSession.
-func (s *prollyWriteSession) SetRoot(ctx context.Context, root *doltdb.RootValue) error {
+// SetWorkingSet implements WriteSession.
+func (s *prollyWriteSession) SetWorkingSet(ctx context.Context, ws *doltdb.WorkingSet) error {
 	s.mut.Lock()
 	defer s.mut.Unlock()
-
-	return s.setRoot(ctx, root)
+	return s.setWorkingSet(ctx, ws)
 }
 
-// UpdateRoot implemented WriteSession.
-func (s *prollyWriteSession) UpdateRoot(ctx context.Context, cb func(ctx context.Context, current *doltdb.RootValue) (*doltdb.RootValue, error)) error {
+// UpdateWorkingSet implements WriteSession.
+func (s *prollyWriteSession) UpdateWorkingSet(ctx context.Context, cb func(ctx context.Context, current *doltdb.WorkingSet) (*doltdb.WorkingSet, error)) error {
 	s.mut.Lock()
 	defer s.mut.Unlock()
 
@@ -124,7 +128,7 @@ func (s *prollyWriteSession) UpdateRoot(ctx context.Context, cb func(ctx context
 		return err
 	}
 
-	return s.setRoot(ctx, mutated)
+	return s.SetWorkingSet(ctx, mutated)
 }
 
 // GetOptions implemented WriteSession.
@@ -138,7 +142,7 @@ func (s *prollyWriteSession) SetOptions(opts editor.Options) {
 }
 
 // flush is the inner implementation for Flush that does not acquire any locks
-func (s *prollyWriteSession) flush(ctx context.Context) (*doltdb.RootValue, error) {
+func (s *prollyWriteSession) flush(ctx context.Context) (*doltdb.WorkingSet, error) {
 	var err error
 	tables := make(map[string]*doltdb.Table, len(s.tables))
 	mu := &sync.Mutex{}
@@ -153,6 +157,14 @@ func (s *prollyWriteSession) flush(ctx context.Context) (*doltdb.RootValue, erro
 				return err
 			}
 
+			if schema.HasAutoIncrement(wr.sch) {
+				v := s.tracker.Current(name)
+				t, err = t.SetAutoIncrementValue(ctx, v)
+				if err != nil {
+					return err
+				}
+			}
+
 			mu.Lock()
 			defer mu.Unlock()
 			tables[name] = t
@@ -163,23 +175,40 @@ func (s *prollyWriteSession) flush(ctx context.Context) (*doltdb.RootValue, erro
 		return nil, err
 	}
 
-	flushed := s.root
+	flushed := s.workingSet.WorkingRoot()
 	for name, tbl := range tables {
 		flushed, err = flushed.PutTable(ctx, name, tbl)
 		if err != nil {
 			return nil, err
 		}
 	}
-	s.root = flushed
+	s.workingSet = s.workingSet.WithWorkingRoot(flushed)
 
-	return s.root, nil
+	return s.workingSet, nil
 }
 
 // setRoot is the inner implementation for SetRoot that does not acquire any locks
-func (s *prollyWriteSession) setRoot(ctx context.Context, root *doltdb.RootValue) error {
-	for name := range s.tables {
-		delete(s.tables, name)
+func (s *prollyWriteSession) setWorkingSet(ctx context.Context, ws *doltdb.WorkingSet) error {
+	root := ws.WorkingRoot()
+	for tableName, tableWriter := range s.tables {
+		t, ok, err := root.GetTable(ctx, tableName)
+		if err != nil {
+			return err
+		}
+		if !ok { // table was removed in newer root
+			delete(s.tables, tableName)
+			continue
+		}
+		tSch, err := t.GetSchema(ctx)
+		if err != nil {
+			return err
+		}
+
+		err = tableWriter.Reset(ctx, s, t, tSch)
+		if err != nil {
+			return err
+		}
 	}
-	s.root = root
+	s.workingSet = ws
 	return nil
 }

@@ -87,14 +87,14 @@ func TestPushOnWriteHook(t *testing.T) {
 		t.Fatal("Couldn't find commit")
 	}
 
-	meta, err := commit.GetCommitMeta()
+	meta, err := commit.GetCommitMeta(context.Background())
 	assert.NoError(t, err)
 
 	if meta.Name != committerName || meta.Email != committerEmail {
 		t.Error("Unexpected metadata")
 	}
 
-	root, err := commit.GetRootValue()
+	root, err := commit.GetRootValue(context.Background())
 
 	assert.NoError(t, err)
 
@@ -115,10 +115,11 @@ func TestPushOnWriteHook(t *testing.T) {
 	root, err = root.PutTable(context.Background(), "test", tbl)
 	assert.NoError(t, err)
 
-	valHash, err := ddb.WriteRootValue(context.Background(), root)
+	r, valHash, err := ddb.WriteRootValue(context.Background(), root)
 	assert.NoError(t, err)
+	root = r
 
-	meta, err = NewCommitMeta(committerName, committerEmail, "Sample data")
+	meta, err = datas.NewCommitMeta(committerName, committerEmail, "Sample data")
 	if err != nil {
 		t.Error("Failed to commit")
 	}
@@ -230,14 +231,14 @@ func TestAsyncPushOnWrite(t *testing.T) {
 				t.Fatal("Couldn't find commit")
 			}
 
-			meta, err := commit.GetCommitMeta()
+			meta, err := commit.GetCommitMeta(context.Background())
 			assert.NoError(t, err)
 
 			if meta.Name != committerName || meta.Email != committerEmail {
 				t.Error("Unexpected metadata")
 			}
 
-			root, err := commit.GetRootValue()
+			root, err := commit.GetRootValue(context.Background())
 
 			assert.NoError(t, err)
 
@@ -252,10 +253,11 @@ func TestAsyncPushOnWrite(t *testing.T) {
 			root, err = root.PutTable(context.Background(), "test", tbl)
 			assert.NoError(t, err)
 
-			valHash, err := ddb.WriteRootValue(context.Background(), root)
+			r, valHash, err := ddb.WriteRootValue(context.Background(), root)
 			assert.NoError(t, err)
+			root = r
 
-			meta, err = NewCommitMeta(committerName, committerEmail, "Sample data")
+			meta, err = datas.NewCommitMeta(committerName, committerEmail, "Sample data")
 			if err != nil {
 				t.Error("Failed to create CommitMeta")
 			}

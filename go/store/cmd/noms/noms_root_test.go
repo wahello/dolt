@@ -51,13 +51,21 @@ func (s *nomsRootTestSuite) TestBasic() {
 	ds := sp.GetDataset(context.Background())
 	dbSpecStr := spec.CreateDatabaseSpecString("nbs", s.DBDir)
 	db := ds.Database()
+
+	goldenHello := "u8g2r4qg97kkqn42lvao77st2mv3bpl0\n"
+	goldenGoodbye := "70b9adi6amrab3a5t4hcibdob0cq49m0\n"
+	if types.Format_Default == types.Format_DOLT_DEV {
+		goldenHello = "bu6q8qir2vfq6lliqrko4jqls0rjga0h\n"
+		goldenGoodbye = "79a0kfbq40fl8s359e8ssitevt76jsnv\n"
+	}
+
 	ds, _ = datas.CommitValue(context.Background(), db, ds, types.String("hello!"))
 	c1, _ := s.MustRun(main, []string{"root", dbSpecStr})
-	s.Equal("maojl4udo9a7mtk2rnhuc08r0u7hc0fn\n", c1)
+	s.Equal(goldenHello, c1)
 
 	ds, _ = datas.CommitValue(context.Background(), db, ds, types.String("goodbye"))
 	c2, _ := s.MustRun(main, []string{"root", dbSpecStr})
-	s.Equal("cac1ilk2nnbk5vmdctlg9r5abj0m1u6f\n", c2)
+	s.Equal(goldenGoodbye, c2)
 
 	// TODO: Would be good to test successful --update too, but requires changes to MustRun to allow
 	// input because of prompt :(.

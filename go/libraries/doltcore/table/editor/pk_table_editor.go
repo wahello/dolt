@@ -30,7 +30,6 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
-	"github.com/dolthub/dolt/go/libraries/doltcore/table/typed/noms"
 	"github.com/dolthub/dolt/go/store/types"
 )
 
@@ -62,10 +61,13 @@ type TableEditor interface {
 	InsertRow(ctx context.Context, r row.Row, errFunc PKDuplicateErrFunc) error
 	UpdateRow(ctx context.Context, old, new row.Row, errFunc PKDuplicateErrFunc) error
 	DeleteRow(ctx context.Context, r row.Row) error
-	HasEdits() bool
 
-	GetAutoIncrementValue() types.Value
-	SetAutoIncrementValue(v types.Value) (err error)
+	// GetIndexedRows returns all matching rows for the given key on the index. The key is assumed to be in the format
+	// expected of the index, similar to searching on the index map itself.
+	GetIndexedRows(ctx context.Context, key types.Tuple, indexName string, idxSch schema.Schema) ([]row.Row, error)
+	HasEdits() bool
+	MarkDirty()
+
 	SetConstraintViolation(ctx context.Context, k types.LesserValuable, v types.Valuable) error
 
 	Table(ctx context.Context) (*doltdb.Table, error)
@@ -89,8 +91,16 @@ func NewTableEditor(ctx context.Context, t *doltdb.Table, tableSch schema.Schema
 
 // Options are properties that define different functionality for the tableEditSession.
 type Options struct {
+	//TODO: look into this
 	ForeignKeyChecksDisabled bool // If true, then ALL foreign key checks AND updates (through CASCADE, etc.) are skipped
 	Deaf                     DbEaFactory
+	Tempdir                  string
+}
+
+// WithDeaf returns a new Options with the given  edit accumulator factory class
+func (o Options) WithDeaf(deaf DbEaFactory) Options {
+	o.Deaf = deaf
+	return o
 }
 
 func TestEditorOptions(vrw types.ValueReadWriter) Options {
@@ -121,13 +131,11 @@ type pkTableEditor struct {
 	// Whenever any write operation occurs on the table editor, this is set to true for the lifetime of the editor.
 	dirty uint32
 
-	hasAutoInc bool
-	autoIncCol schema.Column
-	autoIncVal types.Value
-
 	// This mutex blocks on each operation, so that map reads and updates are serialized
 	writeMutex *sync.Mutex
 }
+
+var _ TableEditor = (*pkTableEditor)(nil)
 
 func newPkTableEditor(ctx context.Context, t *doltdb.Table, tableSch schema.Schema, name string, opts Options) (*pkTableEditor, error) {
 	tf := tupleFactories.Get().(*types.TupleFactory)
@@ -158,122 +166,7 @@ func newPkTableEditor(ctx context.Context, t *doltdb.Table, tableSch schema.Sche
 		te.indexEds[i] = NewIndexEditor(ctx, index, indexData, tableSch, opts)
 	}
 
-	err = tableSch.GetAllCols().Iter(func(tag uint64, col schema.Column) (stop bool, err error) {
-		if col.AutoIncrement {
-			te.autoIncVal, err = t.GetAutoIncrementValue(ctx)
-			if err != nil {
-				return true, err
-			}
-			te.hasAutoInc = true
-			te.autoIncCol = col
-			return true, err
-		}
-		return false, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	return te, nil
-}
-
-// ContainsIndexedKey returns whether the given key is contained within the index. The key is assumed to be in the
-// format expected of the index, similar to searching on the index map itself.
-func ContainsIndexedKey(ctx context.Context, te TableEditor, key types.Tuple, indexName string, idxSch schema.Schema) (bool, error) {
-	// If we're working with a pkTableEditor, then we don't need to flush the table nor indexes.
-	if pkTe, ok := te.(*pkTableEditor); ok {
-		for _, indexEd := range pkTe.indexEds {
-			if indexEd.idx.Name() == indexName {
-				return indexEd.HasPartial(ctx, key)
-			}
-		}
-		return false, fmt.Errorf("an index editor for `%s` could not be found", indexName)
-	}
-
-	tbl, err := te.Table(ctx)
-	if err != nil {
-		return false, err
-	}
-
-	idxMap, err := tbl.GetNomsIndexRowData(ctx, indexName)
-	if err != nil {
-		return false, err
-	}
-
-	indexIter := noms.NewNomsRangeReader(idxSch, idxMap,
-		[]*noms.ReadRange{{Start: key, Inclusive: true, Reverse: false, Check: noms.InRangeCheckPartial(key)}},
-	)
-
-	_, err = indexIter.ReadRow(ctx)
-	if err == nil { // row exists
-		return true, nil
-	} else if err != io.EOF {
-		return false, err
-	} else {
-		return false, nil
-	}
-}
-
-// GetIndexedRowKVPs returns all matching row keys and values for the given key on the index. The key is assumed to be in the format
-// expected of the index, similar to searching on the index map itself.
-func GetIndexedRowKVPs(ctx context.Context, te TableEditor, key types.Tuple, indexName string, idxSch schema.Schema) ([][2]types.Tuple, error) {
-	tbl, err := te.Table(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	idxMap, err := tbl.GetNomsIndexRowData(ctx, indexName)
-	if err != nil {
-		return nil, err
-	}
-
-	indexIter := noms.NewNomsRangeReader(idxSch, idxMap,
-		[]*noms.ReadRange{{Start: key, Inclusive: true, Reverse: false, Check: noms.InRangeCheckPartial(key)}},
-	)
-
-	rowData, err := tbl.GetNomsRowData(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	lookupTags := make(map[uint64]int)
-	for i, tag := range te.Schema().GetPKCols().Tags {
-		lookupTags[tag] = i
-	}
-
-	// handle keyless case, where no columns are pk's and rowIdTag is the only lookup tag
-	if len(lookupTags) == 0 {
-		lookupTags[schema.KeylessRowIdTag] = 0
-	}
-
-	var rowKVPS [][2]types.Tuple
-	for {
-		k, err := indexIter.ReadKey(ctx)
-
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, err
-		}
-
-		pkTupleVal, err := indexKeyToTableKey(tbl.Format(), k, lookupTags)
-		if err != nil {
-			return nil, err
-		}
-
-		fieldsVal, ok, err := rowData.MaybeGetTuple(ctx, pkTupleVal)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, nil
-		}
-
-		rowKVPS = append(rowKVPS, [2]types.Tuple{pkTupleVal, fieldsVal})
-	}
-
-	return rowKVPS, nil
-
 }
 
 func indexKeyToTableKey(nbf *types.NomsBinFormat, indexKey types.Tuple, lookupTags map[uint64]int) (types.Tuple, error) {
@@ -320,21 +213,87 @@ func indexKeyToTableKey(nbf *types.NomsBinFormat, indexKey types.Tuple, lookupTa
 
 // GetIndexedRows returns all matching rows for the given key on the index. The key is assumed to be in the format
 // expected of the index, similar to searching on the index map itself.
-func GetIndexedRows(ctx context.Context, te TableEditor, key types.Tuple, indexName string, idxSch schema.Schema) ([]row.Row, error) {
-	rowKVPS, err := GetIndexedRowKVPs(ctx, te, key, indexName, idxSch)
-	if err != nil {
-		return nil, err
-	}
+func (te *pkTableEditor) GetIndexedRows(ctx context.Context, key types.Tuple, indexName string, idxSch schema.Schema) ([]row.Row, error) {
+	for _, indexEd := range te.indexEds {
+		if indexEd.idx.Name() == indexName {
+			keyHash, err := key.Hash(key.Format())
+			if err != nil {
+				return nil, err
+			}
+			idxKeys, err := indexEd.iea.HasPartial(ctx, idxSch, keyHash, key)
+			if err != nil {
+				return nil, err
+			}
+			if len(idxKeys) == 0 {
+				return nil, nil
+			}
 
-	rows := make([]row.Row, len(rowKVPS))
-	for i, rowKVP := range rowKVPS {
-		rows[i], err = row.FromNoms(te.Schema(), rowKVP[0], rowKVP[1])
-		if err != nil {
-			return nil, err
+			lookupTags := make(map[uint64]int)
+			for i, tag := range te.Schema().GetPKCols().Tags {
+				lookupTags[tag] = i
+			}
+			rows := make([]row.Row, len(idxKeys))
+
+			for i, idxKey := range idxKeys {
+				pkKey, err := indexKeyToTableKey(te.Format(), idxKey.key, lookupTags)
+				if err != nil {
+					return nil, err
+				}
+				pkKeyHash, err := pkKey.Hash(pkKey.Format())
+				if err != nil {
+					return nil, err
+				}
+				kvp, ok, err := te.tea.Get(ctx, pkKeyHash, pkKey)
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					keyStr, _ := formatKey(ctx, pkKey)
+					return nil, fmt.Errorf("index `%s` has reference to primary key when parent table `%s` does not: %s",
+						indexEd.idx.Name(), te.name, keyStr)
+				}
+
+				rows[i], err = row.FromNoms(te.Schema(), kvp.k, kvp.v)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			return rows, nil
 		}
 	}
 
-	return rows, nil
+	// If there are no index entries then we should check if this is actually the primary key. Indexes store all rows in
+	// the primary key, so this should only be true if the index is either the primary key or a prefix. The calling
+	// function should guarantee that the key is a prefix, so we do not reorder it here.
+	if idxSch.GetPKCols().Size() <= te.tSch.GetPKCols().Size() {
+		for _, idxCol := range idxSch.GetPKCols().GetColumns() {
+			if _, ok := te.tSch.GetPKCols().TagToCol[idxCol.Tag]; !ok {
+				keyStr, _ := formatKey(ctx, key)
+				return nil, fmt.Errorf("requested the following values from index `%s` on table `%s`: %s",
+					indexName, te.name, keyStr)
+			}
+		}
+
+		keyHash, err := key.Hash(key.Format())
+		if err != nil {
+			return nil, err
+		}
+		kvp, ok, err := te.tea.Get(ctx, keyHash, key)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		dRow, err := row.FromNoms(te.Schema(), kvp.k, kvp.v)
+		if err != nil {
+			return nil, err
+		}
+		return []row.Row{dRow}, nil
+	}
+
+	return nil, fmt.Errorf("an index editor for `%s` could not be found on table `%s`", indexName, te.name)
 }
 
 func (te *pkTableEditor) keyErrForKVP(ctx context.Context, indexName string, kvp *doltKVP, isPk bool, errFunc PKDuplicateErrFunc) error {
@@ -439,32 +398,7 @@ func (te *pkTableEditor) insertKeyVal(ctx context.Context, keyHash hash.Hash, ke
 		return err
 	}
 
-	if te.hasAutoInc {
-		insertVal, ok := tagToVal[te.autoIncCol.Tag]
-
-		if ok {
-			var less bool
-
-			// float auto increment values should be rounded before comparing to the current auto increment values
-			if te.autoIncVal.Kind() == types.FloatKind {
-				rounded := types.Round(insertVal)
-				less, err = rounded.Less(te.nbf, te.autoIncVal)
-			} else {
-				less, err = insertVal.Less(te.nbf, te.autoIncVal)
-			}
-
-			if err != nil {
-				return err
-			}
-
-			if !less {
-				te.autoIncVal = types.Round(insertVal)
-				te.autoIncVal = types.Increment(te.autoIncVal)
-			}
-		}
-	}
-
-	te.setDirty(true)
+	te.MarkDirty()
 	return nil
 }
 
@@ -539,7 +473,7 @@ func (te *pkTableEditor) DeleteByKey(ctx context.Context, key types.Tuple, tagTo
 		return err
 	}
 
-	te.setDirty(true)
+	te.MarkDirty()
 	return te.tea.Delete(keyHash, key)
 }
 
@@ -637,7 +571,7 @@ func (te *pkTableEditor) UpdateRow(ctx context.Context, dOldRow row.Row, dNewRow
 		return err
 	}
 
-	te.setDirty(true)
+	te.MarkDirty()
 
 	if kvp, pkExists, err := te.tea.Get(ctx, newHash, dNewKeyVal); err != nil {
 		return err
@@ -648,37 +582,14 @@ func (te *pkTableEditor) UpdateRow(ctx context.Context, dOldRow row.Row, dNewRow
 	return te.tea.Insert(newHash, dNewKeyVal, dNewRowVal)
 }
 
-func (te *pkTableEditor) GetAutoIncrementValue() types.Value {
-	return te.autoIncVal
-}
-
-func (te *pkTableEditor) SetAutoIncrementValue(v types.Value) (err error) {
-	te.writeMutex.Lock()
-	defer te.writeMutex.Unlock()
-
-	te.setDirty(true)
-	te.autoIncVal = v
-	te.t, err = te.t.SetAutoIncrementValue(nil, te.autoIncVal)
-
-	return err
-}
-
 // Table returns a Table based on the edits given, if any. If Flush() was not called prior, it will be called here.
 func (te *pkTableEditor) Table(ctx context.Context) (*doltdb.Table, error) {
 	if !te.HasEdits() {
 		return te.t, nil
 	}
 
-	var err error
-	if te.hasAutoInc {
-		te.t, err = te.t.SetAutoIncrementValue(nil, te.autoIncVal)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	var tbl *doltdb.Table
-	err = func() error {
+	err := func() error {
 		te.writeMutex.Lock()
 		defer te.writeMutex.Unlock()
 
@@ -809,7 +720,7 @@ func (te *pkTableEditor) SetConstraintViolation(ctx context.Context, k types.Les
 		te.cvEditor = cvMap.Edit()
 	}
 	te.cvEditor.Set(k, v)
-	te.setDirty(true)
+	te.MarkDirty()
 	return nil
 }
 
@@ -838,16 +749,13 @@ func (te *pkTableEditor) Close(ctx context.Context) error {
 	return nil
 }
 
-func (te *pkTableEditor) setDirty(dirty bool) {
-	var val uint32
-	if dirty {
-		val = 1
-	}
-
-	atomic.StoreUint32(&te.dirty, val)
+// MarkDirty implements TableEditor.
+func (te *pkTableEditor) MarkDirty() {
+	dirty := uint32(1)
+	atomic.StoreUint32(&te.dirty, dirty)
 }
 
-// hasEdits returns whether the table editor has had any successful write operations. This does not track whether the
+// HasEdits returns whether the table editor has had any successful write operations. This does not track whether the
 // write operations were eventually rolled back (such as through an error on StatementFinished), so it is still possible
 // for this to return true when the table editor does not actually contain any new edits. This is preferable to
 // potentially returning false when there are edits.

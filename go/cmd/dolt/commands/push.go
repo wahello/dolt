@@ -175,82 +175,39 @@ func (ts *TextSpinner) next() string {
 	return string([]rune{spinnerSeq[ts.seqPos]})
 }
 
-func pullerProgFunc(ctx context.Context, pullerEventCh chan pull.PullerEvent, language progLanguage) {
-	var pos int
-	var currentTreeLevel int
-	var percentBuffered float64
-	var tableFilesClosed int
-	var filesTransfered int
-	var ts TextSpinner
-
-	uploadRate := ""
-
-	for evt := range pullerEventCh {
-		if ctx.Err() != nil {
+func pullerProgFunc(ctx context.Context, statsCh chan pull.Stats, language progLanguage) {
+	p := cli.NewEphemeralPrinter()
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		}
-		switch evt.EventType {
-		case pull.NewLevelTWEvent:
-			if evt.TWEventDetails.TreeLevel != 1 {
-				currentTreeLevel = evt.TWEventDetails.TreeLevel
-				percentBuffered = 0
+		case stats, ok := <-statsCh:
+			if !ok {
+				return
 			}
-		case pull.DestDBHasTWEvent:
-			if evt.TWEventDetails.TreeLevel != -1 {
-				currentTreeLevel = evt.TWEventDetails.TreeLevel
-			}
-
-		case pull.LevelUpdateTWEvent:
-			if evt.TWEventDetails.TreeLevel != -1 {
-				currentTreeLevel = evt.TWEventDetails.TreeLevel
-				toBuffer := evt.TWEventDetails.ChunksInLevel - evt.TWEventDetails.ChunksAlreadyHad
-
-				if toBuffer > 0 {
-					percentBuffered = 100 * float64(evt.TWEventDetails.ChunksBuffered) / float64(toBuffer)
-				}
-			}
-
-		case pull.LevelDoneTWEvent:
-
-		case pull.TableFileClosedEvent:
-			tableFilesClosed += 1
-
-		case pull.StartUploadTableFileEvent:
-
-		case pull.UploadTableFileUpdateEvent:
-			bps := float64(evt.TFEventDetails.Stats.Read) / evt.TFEventDetails.Stats.Elapsed.Seconds()
-			uploadRate = humanize.Bytes(uint64(bps)) + "/s"
-
-		case pull.EndUploadTableFileEvent:
-			filesTransfered += 1
-		}
-
-		if currentTreeLevel == -1 {
-			continue
-		}
-
-		var msg string
-		msg = fmt.Sprintf("%s Tree Level: %d, Percent Buffered: %.2f%%,", ts.next(), currentTreeLevel, percentBuffered)
-
-		if language == downloadLanguage {
-			msg = fmt.Sprintf("%s Files Written: %d", msg, filesTransfered)
-		} else {
-			if len(uploadRate) > 0 {
-				msg = fmt.Sprintf("%s Files Created: %d, Files Uploaded: %d, Current Upload Speed: %s", msg, tableFilesClosed, filesTransfered, uploadRate)
+			if language == downloadLanguage {
+				p.Printf("Downloaded %s chunks, %s @ %s/s.",
+					humanize.Comma(int64(stats.FetchedSourceChunks)),
+					humanize.Bytes(stats.FetchedSourceBytes),
+					humanize.SIWithDigits(stats.FetchedSourceBytesPerSec, 2, "B"),
+				)
 			} else {
-				msg = fmt.Sprintf("%s Files Created: %d, Files Uploaded: %d", msg, tableFilesClosed, filesTransfered)
+				p.Printf("Uploaded %s of %s @ %s/s.",
+					humanize.Bytes(stats.FinishedSendBytes),
+					humanize.Bytes(stats.BufferedSendBytes),
+					humanize.SIWithDigits(stats.SendBytesPerSec, 2, "B"),
+				)
 			}
 		}
-
-		pos = cli.DeleteAndPrint(pos, msg)
+		p.Display()
 	}
 }
 
 func progFunc(ctx context.Context, progChan chan pull.PullProgress) {
 	var latest pull.PullProgress
 	last := time.Now().UnixNano() - 1
-	lenPrinted := 0
 	done := false
+	p := cli.NewEphemeralPrinter()
 	for !done {
 		if ctx.Err() != nil {
 			return
@@ -273,15 +230,12 @@ func progFunc(ctx context.Context, progChan chan pull.PullProgress) {
 		if done || deltaTime > halfSec {
 			last = nowUnix
 			if latest.KnownCount > 0 {
-				progMsg := fmt.Sprintf("Counted chunks: %d, Buffered chunks: %d)", latest.KnownCount, latest.DoneCount)
-				lenPrinted = cli.DeleteAndPrint(lenPrinted, progMsg)
+				p.Printf("Counted chunks: %d, Buffered chunks: %d)\n", latest.KnownCount, latest.DoneCount)
+				p.Display()
 			}
 		}
 	}
-
-	if lenPrinted > 0 {
-		cli.Println()
-	}
+	p.Display()
 }
 
 // progLanguage is the language to use when displaying progress for a pull from a src db to a sink db.
@@ -293,8 +247,8 @@ const (
 )
 
 func buildProgStarter(language progLanguage) actions.ProgStarter {
-	return func(ctx context.Context) (*sync.WaitGroup, chan pull.PullProgress, chan pull.PullerEvent) {
-		pullerEventCh := make(chan pull.PullerEvent, 128)
+	return func(ctx context.Context) (*sync.WaitGroup, chan pull.PullProgress, chan pull.Stats) {
+		statsCh := make(chan pull.Stats, 128)
 		progChan := make(chan pull.PullProgress, 128)
 		wg := &sync.WaitGroup{}
 
@@ -307,21 +261,16 @@ func buildProgStarter(language progLanguage) actions.ProgStarter {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			pullerProgFunc(ctx, pullerEventCh, language)
+			pullerProgFunc(ctx, statsCh, language)
 		}()
 
-		return wg, progChan, pullerEventCh
+		return wg, progChan, statsCh
 	}
 }
 
-func stopProgFuncs(cancel context.CancelFunc, wg *sync.WaitGroup, progChan chan pull.PullProgress, pullerEventCh chan pull.PullerEvent) {
+func stopProgFuncs(cancel context.CancelFunc, wg *sync.WaitGroup, progChan chan pull.PullProgress, statsCh chan pull.Stats) {
 	cancel()
 	close(progChan)
-	close(pullerEventCh)
+	close(statsCh)
 	wg.Wait()
-}
-
-func bytesPerSec(bytes uint64, start time.Time) string {
-	bps := float64(bytes) / float64(time.Since(start).Seconds())
-	return humanize.Bytes(uint64(bps))
 }

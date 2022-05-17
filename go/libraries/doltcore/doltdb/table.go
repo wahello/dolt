@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
+	"unicode"
 
 	"github.com/dolthub/go-mysql-server/sql"
 
@@ -54,6 +56,8 @@ var (
 // IsValidTableName returns true if the name matches the regular expression TableNameRegexStr.
 // Table names must be composed of 1 or more letters and non-initial numerals, as well as the characters _ and -
 func IsValidTableName(name string) bool {
+	// Ignore all leading digits
+	name = strings.TrimLeftFunc(name, unicode.IsDigit)
 	return tableNameRegex.MatchString(name)
 }
 
@@ -103,7 +107,7 @@ func (t *Table) ValueReadWriter() types.ValueReadWriter {
 }
 
 // SetConflicts sets the merge conflicts for this table.
-func (t *Table) SetConflicts(ctx context.Context, schemas conflict.ConflictSchema, conflictData types.Map) (*Table, error) {
+func (t *Table) SetConflicts(ctx context.Context, schemas conflict.ConflictSchema, conflictData durable.ConflictIndex) (*Table, error) {
 	table, err := t.table.SetConflicts(ctx, schemas, conflictData)
 	if err != nil {
 		return nil, err
@@ -112,7 +116,7 @@ func (t *Table) SetConflicts(ctx context.Context, schemas conflict.ConflictSchem
 }
 
 // GetConflicts returns a map built from ValueReadWriter when there are no conflicts in table.
-func (t *Table) GetConflicts(ctx context.Context) (conflict.ConflictSchema, types.Map, error) {
+func (t *Table) GetConflicts(ctx context.Context) (conflict.ConflictSchema, durable.ConflictIndex, error) {
 	return t.table.GetConflicts(ctx)
 }
 
@@ -136,7 +140,7 @@ func (t *Table) NumRowsInConflict(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 
-	return cons.Len(), nil
+	return cons.Count(), nil
 }
 
 // ClearConflicts deletes all merge conflicts for this table.
@@ -212,6 +216,9 @@ func (t *Table) GetSchemaHash(ctx context.Context) (hash.Hash, error) {
 }
 
 // UpdateSchema updates the table with the schema given and returns the updated table. The original table is unchanged.
+// This method only updates the schema of a table; the row data is unchanged. Schema alterations that require rebuilding
+// the table (e.g. adding a column in the middle, adding a new non-null column, adding a column in the middle of a
+// schema) must account for these changes separately.
 func (t *Table) UpdateSchema(ctx context.Context, sch schema.Schema) (*Table, error) {
 	table, err := t.table.SetSchema(ctx, sch)
 	if err != nil {
@@ -265,10 +272,16 @@ func (t *Table) GetRowData(ctx context.Context) (durable.Index, error) {
 // ResolveConflicts resolves conflicts for this table.
 func (t *Table) ResolveConflicts(ctx context.Context, pkTuples []types.Value) (invalid, notFound []types.Value, tbl *Table, err error) {
 	removed := 0
-	conflictSchema, confData, err := t.GetConflicts(ctx)
+	conflictSchema, confIdx, err := t.GetConflicts(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+
+	if confIdx.Format() == types.Format_DOLT_1 {
+		panic("resolve conflicts not implemented for new storage format")
+	}
+
+	confData := durable.NomsMapFromConflictIndex(confIdx)
 
 	confEdit := confData.Edit()
 	for _, pkTupleVal := range pkTuples {
@@ -299,7 +312,7 @@ func (t *Table) ResolveConflicts(ctx context.Context, pkTuples []types.Value) (i
 		return invalid, notFound, &Table{table: table}, nil
 	}
 
-	table, err := t.table.SetConflicts(ctx, conflictSchema, conflicts)
+	table, err := t.table.SetConflicts(ctx, conflictSchema, durable.ConflictIndexFromNomsMap(conflicts, t.ValueReadWriter()))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -356,7 +369,7 @@ func (t *Table) GetIndexRowData(ctx context.Context, indexName string) (durable.
 	return indexes.GetIndex(ctx, sch, indexName)
 }
 
-// SetNomsIndexRows replaces the current row data for the given index and returns an updated Table.
+// SetIndexRows replaces the current row data for the given index and returns an updated Table.
 func (t *Table) SetIndexRows(ctx context.Context, indexName string, idx durable.Index) (*Table, error) {
 	indexes, err := t.GetIndexSet(ctx)
 	if err != nil {
@@ -451,15 +464,39 @@ func (t *Table) VerifyIndexRowData(ctx context.Context, indexName string) error 
 }
 
 // GetAutoIncrementValue returns the current AUTO_INCREMENT value for this table.
-func (t *Table) GetAutoIncrementValue(ctx context.Context) (types.Value, error) {
+func (t *Table) GetAutoIncrementValue(ctx context.Context) (uint64, error) {
 	return t.table.GetAutoIncrement(ctx)
 }
 
 // SetAutoIncrementValue sets the current AUTO_INCREMENT value for this table.
-func (t *Table) SetAutoIncrementValue(ctx context.Context, val types.Value) (*Table, error) {
+func (t *Table) SetAutoIncrementValue(ctx context.Context, val uint64) (*Table, error) {
 	table, err := t.table.SetAutoIncrement(ctx, val)
 	if err != nil {
 		return nil, err
 	}
 	return &Table{table: table}, nil
+}
+
+// AddColumnToRows adds the column named to row data as necessary and returns the resulting table.
+func (t *Table) AddColumnToRows(ctx context.Context, newCol string, newSchema schema.Schema) (*Table, error) {
+	idx, err := t.table.GetTableRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	newIdx, err := idx.AddColumnToRows(ctx, newCol, newSchema)
+	if err != nil {
+		return nil, err
+	}
+
+	newTable, err := t.table.SetTableRows(ctx, newIdx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Table{table: newTable}, nil
+}
+
+func (t *Table) DebugString(ctx context.Context) string {
+	return t.table.DebugString(ctx)
 }

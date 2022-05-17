@@ -3,6 +3,7 @@ load $BATS_TEST_DIRNAME/helper/common.bash
 
 setup() {
     setup_common
+    skip_nbf_dolt_1
 
     dolt sql <<SQL
 CREATE TABLE parent (
@@ -365,7 +366,7 @@ SQL
     dolt sql -q "ALTER TABLE child ADD CONSTRAINT fk_name FOREIGN KEY (v1) REFERENCES parent(v1);"
     run dolt sql -q "ALTER TABLE child ADD CONSTRAINT fk_name FOREIGN KEY (v1) REFERENCES parent(v1)"
     [ "$status" -eq "1" ]
-    [[ "$output" =~ "already exists" ]] || false
+    [[ "$output" =~ "duplicate foreign key" ]] || false
 }
 
 @test "foreign-keys: ALTER TABLE DROP FOREIGN KEY" {
@@ -498,10 +499,10 @@ ALTER TABLE child ADD CONSTRAINT fk_name FOREIGN KEY (v1) REFERENCES parent(v1);
 SQL
     run dolt sql -q "ALTER TABLE child DROP INDEX v1"
     [ "$status" -ne "0" ]
-    [[ "$output" =~ "cannot drop index: v1 is referenced by foreign key fk_name" ]] || false
+    [[ "$output" =~ 'cannot drop index: `v1` is used by foreign key `fk_name`' ]] || false
     run dolt sql -q "ALTER TABLE parent DROP INDEX v1"
     [ "$status" -ne "0" ]
-    [[ "$output" =~ "cannot drop index: v1 is referenced by foreign key fk_name" ]] || false
+    [[ "$output" =~ 'cannot drop index: `v1` is used by foreign key `fk_name`' ]] || false
 
     run dolt sql -q "ALTER TABLE child DROP FOREIGN KEY fk_name"
     [ "$status" -eq "0" ]
@@ -809,49 +810,21 @@ INSERT INTO child  VALUES (1, 1, 1), (2, 2, 2);
 SQL
 
     echo $'id,v1,v2\n1,3,3\n2,4,4' > update_parent.csv
-    dolt table import -u parent update_parent.csv
-    run dolt sql -q "SELECT * FROM parent" -r=csv
+    run dolt table import -u parent update_parent.csv
+    [ "$status" -eq "0" ]
+    [[ "$output" =~ "Rows Processed: 2, Additions: 0, Modifications: 2, Had No Effect: 0" ]] || false
+
+    run dolt sql -r csv -q "select * from parent order by id"
     [ "$status" -eq "0" ]
     [[ "$output" =~ "id,v1,v2" ]] || false
     [[ "$output" =~ "1,3,3" ]] || false
     [[ "$output" =~ "2,4,4" ]] || false
-    [[ "${#lines[@]}" = "3" ]] || false
-    run dolt sql -q "SELECT * FROM child" -r=csv
+
+    run dolt sql -r csv -q "select * from child order by id"
     [ "$status" -eq "0" ]
     [[ "$output" =~ "id,v1,v2" ]] || false
     [[ "$output" =~ "1,3,1" ]] || false
     [[ "$output" =~ "2,4,2" ]] || false
-    [[ "${#lines[@]}" = "3" ]] || false
-
-    echo $'id,v1,v2\n1,1,1\n2,2,2' > update_child.csv
-    run dolt table import -u child update_child.csv
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ "violation" ]] || false
-
-    echo $'id,v1,v2\n3,3,3\n4,4,4' > update_child.csv
-    dolt table import -u child update_child.csv
-    run dolt sql -q "SELECT * FROM child" -r=csv
-    [ "$status" -eq "0" ]
-    [[ "$output" =~ "id,v1,v2" ]] || false
-    [[ "$output" =~ "1,3,1" ]] || false
-    [[ "$output" =~ "2,4,2" ]] || false
-    [[ "$output" =~ "3,3,3" ]] || false
-    [[ "$output" =~ "4,4,4" ]] || false
-    [[ "${#lines[@]}" = "5" ]] || false
-
-    echo $'id,v1,v2\n1,1,1\n2,2,2' > update_child.csv
-    run dolt table import -r child update_child.csv
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ "violation" ]] || false
-
-    echo $'id,v1,v2\n3,3,3\n4,4,4' > update_child.csv
-    dolt table import -r child update_child.csv
-    run dolt sql -q "SELECT * FROM child" -r=csv
-    [ "$status" -eq "0" ]
-    [[ "$output" =~ "id,v1,v2" ]] || false
-    [[ "$output" =~ "3,3,3" ]] || false
-    [[ "$output" =~ "4,4,4" ]] || false
-    [[ "${#lines[@]}" = "3" ]] || false
 }
 
 @test "foreign-keys: Commit all" {
@@ -1354,15 +1327,16 @@ SQL
 }
 
 @test "foreign-keys: self-referential same column(s)" {
+    # We differ from MySQL here as we do not allow duplicate indexes (required in MySQL to reference the same
+    # column in self-referential) but we do reuse existing indexes (MySQL requires unique indexes for parent and
+    # child rows).
     dolt sql <<SQL
 CREATE INDEX v1v2 ON parent(v1, v2);
 SQL
-    run dolt sql -q "ALTER TABLE parent ADD CONSTRAINT fk_named FOREIGN KEY (v1) REFERENCES parent(v1);"
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ 'the same column `v1` cannot be used in self referential foreign keys' ]] || false
-    run dolt sql -q "ALTER TABLE parent ADD CONSTRAINT fk_named FOREIGN KEY (v1, v2) REFERENCES parent(v1, v2);"
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ "self referential" ]] || false
+    run dolt sql -q "ALTER TABLE parent ADD CONSTRAINT fk_name1 FOREIGN KEY (v1) REFERENCES parent(v1);"
+    [ "$status" -eq "0" ]
+    run dolt sql -q "ALTER TABLE parent ADD CONSTRAINT fk_name2 FOREIGN KEY (v1, v2) REFERENCES parent(v1, v2);"
+    [ "$status" -eq "0" ]
 }
 
 @test "foreign-keys: self-referential child column follows parent RESTRICT" {
@@ -1565,7 +1539,7 @@ SQL
     # Run a query and assert that no changes were made
     run dolt sql -q "DELETE FROM colors where color='green'"
     [ "$status" -eq "1" ]
-    [[ "$output" =~ 'cannot add or update a child row - Foreign key violation on fk: `color_fk`, table: `objects`, referenced table: `colors`, key: `["green"]`' ]] || false
+    [[ "$output" =~ 'cannot delete or update a parent row' ]] || false
 
     run dolt sql -r csv -q "SELECT * FROM colors"
     [ "$status" -eq "0" ]
@@ -1621,7 +1595,7 @@ SHOW WARNINGS;
 SQL
     [ "$status" -eq "0" ]
     [[ "$output" =~ '1452' ]] || false # first ensure the proper code
-    [[ "$output" =~ 'cannot add or update a child row - Foreign key violation on fk: `color_fk`, table: `objects`, referenced table: `colors`, key: `["yellow"]`' ]] || false
+    [[ "$output" =~ 'cannot add or update a child row - Foreign key violation on fk: `color_fk`, table: `objects`, referenced table: `colors`, key: `[yellow]`' ]] || false
 }
 
 @test "foreign-keys: updating to null works as expected in commit" {
@@ -1672,18 +1646,13 @@ SQL
 
     run dolt table import -u businesses fk_test.csv
     [ "$status" -eq "0" ]
-    [[ "$output" =~ "Rows Processed: 2, Additions: 2, Modifications: 0, Had No Effect: 0" ]] || false
+    [[ "$output" =~ 'Rows Processed: 2, Additions: 2, Modifications: 0, Had No Effect: 0' ]] || false
 
-    # Ensure this fails when the field is NOT NULL
-    dolt sql <<SQL
-TRUNCATE businesses;
-ALTER TABLE businesses MODIFY naics_2017 char(6) NOT NULL;
-SQL
-
-    run dolt table import -u businesses fk_test.csv
-    [ "$status" -eq "1" ]
-    [[ "$output" =~ "Bad Row:" ]] || false
-    [[ "$output" =~ "naics_2017" ]] || false
+    run dolt sql -r csv -q "SELECT * FROM businesses order by name"
+    [ "$status" -eq "0" ]
+    [[ "$output" =~ 'name,naics_2017' ]] || false
+    [[ "$output" =~ 'test,' ]] || false
+    [[ "$output" =~ 'test2,100' ]] || false
 }
 
 @test "foreign-keys: Delayed foreign key resolution" {
@@ -1864,7 +1833,7 @@ ALTER TABLE public.states ADD CONSTRAINT states_pkey PRIMARY KEY (state_id);
 ALTER TABLE public.cities ADD CONSTRAINT foreign_key1 FOREIGN KEY (state) REFERENCES public.states(state);
 SQL
     [ $status -eq 1 ]
-    [[ $output =~ "missing index for constraint" ]] || false
+    [[ $output =~ "missing index for foreign key" ]] || false
 
     run dolt sql -q "SHOW CREATE TABLE public.cities"
     [[ $output =~ "PRIMARY KEY (\`pk\`)" ]] || false
@@ -1920,4 +1889,83 @@ SQL
 
     run dolt sql -q "SHOW CREATE TABLE public.states"
     [[ $output =~ "KEY \`foreign_key1\` (\`state\`)" ]] || false
+}
+
+@test "foreign-keys: creating a foreign key constraint on a table with an unsupported type works" {
+
+    # https://github.com/dolthub/dolt/issues/3023
+    dolt sql <<SQL
+CREATE TABLE IF NOT EXISTS restaurants (
+    id INT PRIMARY KEY,
+    coordinate POINT
+);
+CREATE TABLE IF NOT EXISTS hours (
+    restaurant_id INT PRIMARY KEY AUTO_INCREMENT,
+    FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
+);
+SQL
+
+    run dolt sql -q "show create table hours";
+    [ $status -eq 0 ]
+    [[ $output =~ "FOREIGN KEY (\`restaurant_id\`) REFERENCES \`restaurants\` (\`id\`)" ]] || false
+}
+
+@test "foreign-keys: create foreign key onto primary key" {
+    dolt sql <<SQL
+    drop table child;
+    drop table parent;
+    create table parent (a int, b int, c int, primary key (b,a));
+    create table child (a int primary key, b int);
+SQL
+
+    # ok, it's a prefix
+    dolt sql -q "alter table child add constraint fk1 foreign key (b) references parent (b)"
+
+    # not a prefix
+    run dolt sql -q "alter table child add constraint fk2 foreign key (a) references parent (a)"
+
+    # not a prefix
+    run dolt sql -q "alter table child add constraint fk3 foreign key (a,b) references parent (a,b)"
+
+    # ok
+    run dolt sql -q "alter table child add constraint fk4 foreign key (b,a) references parent (b,a)"
+    [ $status -eq 0 ]
+
+    # the prefix key should not be unique
+    run dolt sql -q "show create table parent"
+    [ $status -eq 0 ]
+    [[ $output =~ "KEY \`b\` (\`b\`)" ]] || false
+    [[ ! $output =~ "UNIQUE" ]] || false
+
+    run dolt sql -q "show create table child"
+    [ $status -eq 0 ]
+    [[ $output =~ "CONSTRAINT \`fk1\` FOREIGN KEY (\`b\`) REFERENCES \`parent\` (\`b\`)" ]] || false
+    [[ $output =~ "CONSTRAINT \`fk4\` FOREIGN KEY (\`b\`,\`a\`) REFERENCES \`parent\` (\`b\`,\`a\`)" ]] || false
+}
+
+@test "foreign-keys: creating a foreign key constraint on a table with rows violating it" {
+    dolt sql <<SQL
+CREATE TABLE a (
+  id int NOT NULL AUTO_INCREMENT,
+  a text NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT INTO a (id,a) VALUES (1,'a');
+CREATE TABLE b (
+  id int NOT NULL AUTO_INCREMENT,
+  b text NOT NULL,
+  a_id int,
+  PRIMARY KEY (id),
+  KEY b_a_id (a_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT INTO b (id, b, a_id) VALUES (1, 'b', NULL);
+INSERT INTO b (id, b, a_id) VALUES (2, 'b2', 31337);
+INSERT INTO b (id, b, a_id) VALUES (3, 'b2', 31337);
+INSERT INTO b (id, b, a_id) VALUES (4, 'b2', 31337);
+SQL
+
+    run dolt sql -q "ALTER TABLE b ADD CONSTRAINT fk_b_a_id_refs_a FOREIGN KEY (a_id) REFERENCES a (id)";
+    [ "$status" -eq 1 ]
+    [[ ! "$output" =~ "panic:" ]] || false
+    [[ "$output" =~ "cannot add or update a child row - Foreign key violation on fk: \`fk_b_a_id_refs_a\`, table: \`b\`, referenced table: \`a\`, key: \`[31337]\`" ]] || false
 }

@@ -147,7 +147,7 @@ func (cmd CatCmd) Exec(ctx context.Context, commandStr string, args []string, dE
 
 // TODO: merge this with the cmd/sql.go code, which is what this was modified from
 func (cmd CatCmd) prettyPrintResults(ctx context.Context, doltSch schema.Schema, rowData types.Map) error {
-	nbf := types.Format_Default
+	nbf := rowData.Format()
 
 	untypedSch, err := untyped.UntypeUnkeySchema(doltSch)
 	if err != nil {
@@ -238,6 +238,16 @@ func (cmd CatCmd) prettyPrintResults(ctx context.Context, doltSch schema.Schema,
 				}
 				if val != types.NullValue {
 					tag := uint64(tagVal.(types.Uint))
+
+					// TODO: This is a bit of hack but enough to last for a long time. This entire function
+					// needs to be rewritten to deal with a storage engine change. In the case of a keyless row
+					// we don't care about the row id tag or cardinality tag. Note, could just convert this into a row.FromNoms
+					// but keyless tables with unique indexes will get identified as keyed rows causing additional problems
+					// in the future. Broadly, in the future we won't need this when all storage engine changes are made.
+					if tag == schema.KeylessRowIdTag || tag == schema.KeylessRowCardinalityTag {
+						continue
+					}
+
 					strPtr, err := doltSch.GetAllCols().TagToCol[tag].TypeInfo.FormatValue(val)
 					if err != nil {
 						return nil, err

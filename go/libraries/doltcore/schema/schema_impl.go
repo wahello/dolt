@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/dolthub/dolt/go/store/types"
 )
 
 var FeatureFlagKeylessSchema = true
@@ -38,7 +40,10 @@ type schemaImpl struct {
 	pkOrdinals                 []int
 }
 
+var _ Schema = (*schemaImpl)(nil)
+
 var ErrInvalidPkOrdinals = errors.New("incorrect number of primary key ordinals")
+var ErrMultipleNotNullConstraints = errors.New("multiple not null constraints on same column")
 
 // SchemaFromCols creates a Schema from a collection of columns
 func SchemaFromCols(allCols *ColCollection) (Schema, error) {
@@ -68,7 +73,6 @@ func SchemaFromCols(allCols *ColCollection) (Schema, error) {
 		return nil, err
 	}
 	return sch, nil
-
 }
 
 func SchemaFromColCollections(allCols, pkColColl, nonPKColColl *ColCollection) Schema {
@@ -88,6 +92,22 @@ func MustSchemaFromCols(typedColColl *ColCollection) Schema {
 		panic(err)
 	}
 	return sch
+}
+
+// ValidateColumnConstraints removes any duplicate NOT NULL column constraints from schemas.
+func ValidateColumnConstraints(allCols *ColCollection) error {
+	for _, col := range allCols.cols {
+		seenNotNull := false
+		for _, cc := range col.Constraints {
+			if cc.GetConstraintType() == NotNullConstraintType {
+				if seenNotNull {
+					return ErrMultipleNotNullConstraints
+				}
+				seenNotNull = true
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateForInsert returns an error if the given schema cannot be written to the dolt database.
@@ -118,10 +138,19 @@ func ValidateForInsert(allCols *ColCollection) error {
 		}
 		colNames[col.Name] = true
 
+		if col.AutoIncrement && !isAutoIncrementKind(col.Kind) {
+			return true, ErrNonAutoIncType
+		}
+
 		return false, nil
 	})
 
 	return err
+}
+
+// isAutoIncrementKind returns true is |k| is a numeric kind.
+func isAutoIncrementKind(k types.NomsKind) bool {
+	return k == types.IntKind || k == types.UintKind || k == types.FloatKind
 }
 
 // UnkeyedSchemaFromCols creates a schema without any primary keys to be used for displaying to users, tests, etc. Such
@@ -208,12 +237,14 @@ func (si *schemaImpl) SetPkOrdinals(o []int) error {
 
 	si.pkOrdinals = o
 	newPks := make([]Column, si.pkCols.Size())
+	newPkTags := make([]uint64, si.pkCols.Size())
 	for i, j := range si.pkOrdinals {
-		newPks[i] = si.allCols.GetByIndex(j)
+		pkCol := si.allCols.GetByIndex(j)
+		newPks[i] = pkCol
+		newPkTags[i] = pkCol.Tag
 	}
 	si.pkCols = NewColCollection(newPks...)
-
-	return nil
+	return si.indexCollection.SetPks(newPkTags)
 }
 
 func (si *schemaImpl) String() string {
@@ -252,4 +283,85 @@ func (si *schemaImpl) Indexes() IndexCollection {
 
 func (si *schemaImpl) Checks() CheckCollection {
 	return si.checkCollection
+}
+
+func (si schemaImpl) AddColumn(newCol Column, order *ColumnOrder) (Schema, error) {
+	if newCol.IsPartOfPK {
+		return nil, fmt.Errorf("cannot add a column with that is a primary key: %s", newCol.Name)
+	}
+
+	// preserve the primary key column names in their original order, which we'll need at the end
+	keyCols := make([]string, len(si.pkOrdinals))
+	for i, ordinal := range si.pkOrdinals {
+		keyCols[i] = si.allCols.GetByIndex(ordinal).Name
+	}
+
+	var newCols []Column
+	var pkCols []Column
+	var nonPkCols []Column
+
+	if order != nil && order.First {
+		newCols = append(newCols, newCol)
+		nonPkCols = append(nonPkCols, newCol)
+	}
+
+	for _, col := range si.GetAllCols().GetColumns() {
+		newCols = append(newCols, col)
+		if col.IsPartOfPK {
+			pkCols = append(pkCols, col)
+		} else {
+			nonPkCols = append(nonPkCols, col)
+		}
+
+		if order != nil && order.AfterColumn == col.Name {
+			newCols = append(newCols, newCol)
+			nonPkCols = append(nonPkCols, newCol)
+		}
+	}
+
+	if order == nil {
+		newCols = append(newCols, newCol)
+		nonPkCols = append(nonPkCols, newCol)
+	}
+
+	collection := NewColCollection(newCols...)
+	si.allCols = collection
+	si.pkCols = NewColCollection(pkCols...)
+	si.nonPKCols = NewColCollection(nonPkCols...)
+
+	// This must be done after we have set the new column order
+	si.pkOrdinals = primaryKeyOrdinals(&si, keyCols)
+
+	err := ValidateForInsert(collection)
+	if err != nil {
+		return nil, err
+	}
+
+	return &si, nil
+}
+
+// indexOf returns the index of the given column in the overall schema
+func (si *schemaImpl) indexOf(colName string) int {
+	i, idx := 0, -1
+	si.allCols.Iter(func(tag uint64, col Column) (stop bool, err error) {
+		if strings.ToLower(col.Name) == strings.ToLower(colName) {
+			idx = i
+			return true, nil
+		}
+		i++
+		return false, nil
+	})
+
+	return idx
+}
+
+// primaryKeyOrdinals returns the primary key ordinals for the schema given and the column names of the key columns
+// given.
+func primaryKeyOrdinals(sch *schemaImpl, keyCols []string) []int {
+	ordinals := make([]int, len(keyCols))
+	for i, colName := range keyCols {
+		ordinals[i] = sch.indexOf(colName)
+	}
+
+	return ordinals
 }

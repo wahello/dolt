@@ -121,7 +121,7 @@ func MergeCommitSpec(ctx context.Context, dEnv *env.DoltEnv, spec *MergeSpec) (m
 }
 
 func ExecNoFFMerge(ctx context.Context, dEnv *env.DoltEnv, spec *MergeSpec) (map[string]*MergeStats, error) {
-	mergedRoot, err := spec.MergeC.GetRootValue()
+	mergedRoot, err := spec.MergeC.GetRootValue(ctx)
 
 	if err != nil {
 		return nil, ErrFailedToReadDatabase
@@ -189,7 +189,7 @@ func ExecuteFFMerge(
 	dEnv *env.DoltEnv,
 	spec *MergeSpec,
 ) error {
-	stagedRoot, err := spec.MergeC.GetRootValue()
+	stagedRoot, err := spec.MergeC.GetRootValue(ctx)
 	if err != nil {
 		return err
 	}
@@ -236,7 +236,7 @@ func ExecuteFFMerge(
 }
 
 func ExecuteMerge(ctx context.Context, dEnv *env.DoltEnv, spec *MergeSpec) (map[string]*MergeStats, error) {
-	opts := editor.Options{Deaf: dEnv.BulkDbEaFactory()}
+	opts := editor.Options{Deaf: dEnv.BulkDbEaFactory(), Tempdir: dEnv.TempTableFilesDir()}
 	mergedRoot, tblToStats, err := MergeCommits(ctx, spec.HeadC, spec.MergeC, opts)
 	if err != nil {
 		switch err {

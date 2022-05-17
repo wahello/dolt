@@ -52,13 +52,28 @@ func (idt *IndexedDoltTable) Schema() sql.Schema {
 }
 
 func (idt *IndexedDoltTable) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
-	rows := index.DoltIndexFromLookup(idt.indexLookup).IndexRowData()
-	return index.SinglePartitionIterFromNomsMap(rows), nil
+	dt, err := idt.table.doltTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.NewRangePartitionIter(ctx, dt, idt.indexLookup)
 }
 
 func (idt *IndexedDoltTable) PartitionRows(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {
 	// todo(andy): only used by 'AS OF` queries
-	return index.RowIterForIndexLookup(ctx, idt.indexLookup, nil)
+	dt, err := idt.table.doltTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.RowIterForIndexLookup(ctx, dt, idt.indexLookup, idt.table.sqlSch, nil)
+}
+
+func (idt *IndexedDoltTable) PartitionRows2(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {
+	dt, err := idt.table.doltTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.RowIterForIndexLookup(ctx, dt, idt.indexLookup, idt.table.sqlSch, nil)
 }
 
 func (idt *IndexedDoltTable) IsTemporary() bool {
@@ -70,23 +85,45 @@ var _ sql.UpdatableTable = (*WritableIndexedDoltTable)(nil)
 var _ sql.DeletableTable = (*WritableIndexedDoltTable)(nil)
 var _ sql.ReplaceableTable = (*WritableIndexedDoltTable)(nil)
 var _ sql.StatisticsTable = (*WritableIndexedDoltTable)(nil)
+var _ sql.ProjectedTable = (*WritableIndexedDoltTable)(nil)
 
 type WritableIndexedDoltTable struct {
 	*WritableDoltTable
 	indexLookup sql.IndexLookup
 }
 
+var _ sql.Table2 = (*WritableIndexedDoltTable)(nil)
+
 func (t *WritableIndexedDoltTable) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
-	return index.NewRangePartitionIter(t.indexLookup), nil
+	dt, err := t.doltTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index.NewRangePartitionIter(ctx, dt, t.indexLookup)
 }
 
 func (t *WritableIndexedDoltTable) PartitionRows(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {
 	return index.PartitionIndexedTableRows(ctx, t.indexLookup.Index(), part, t.sqlSch, t.projectedCols)
 }
 
-func (t *WritableIndexedDoltTable) WithProjection(colNames []string) sql.Table {
+func (t *WritableIndexedDoltTable) PartitionRows2(ctx *sql.Context, part sql.Partition) (sql.RowIter2, error) {
+	iter, err := index.PartitionIndexedTableRows(ctx, t.indexLookup.Index(), part, t.sqlSch, t.projectedCols)
+	if err != nil {
+		return nil, err
+	}
+
+	return iter.(sql.RowIter2), nil
+}
+
+// WithProjections implements sql.ProjectedTable
+func (t *WritableIndexedDoltTable) WithProjections(colNames []string) sql.Table {
 	return &WritableIndexedDoltTable{
-		WritableDoltTable: t.WithProjection(colNames).(*WritableDoltTable),
+		WritableDoltTable: t.WithProjections(colNames).(*WritableDoltTable),
 		indexLookup:       t.indexLookup,
 	}
+}
+
+// Projections implements sql.ProjectedTable
+func (t *WritableIndexedDoltTable) Projections() []string {
+	return t.projectedCols
 }

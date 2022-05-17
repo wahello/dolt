@@ -524,6 +524,10 @@ func (tr tableReader) findOffsets(reqs []getRecord) (ors offsetRecSlice, remaini
 				break
 			}
 		}
+
+		if !reqs[i].found {
+			remaining = true
+		}
 	}
 
 	sort.Sort(ors)
@@ -644,7 +648,10 @@ func (tr tableReader) reader(ctx context.Context) (io.Reader, error) {
 }
 
 func (tr tableReader) size() (uint64, error) {
-	i, _ := tr.index()
+	i, err := tr.index()
+	if err != nil {
+		return 0, err
+	}
 	return i.TableFileSize(), nil
 }
 

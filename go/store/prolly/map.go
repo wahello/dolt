@@ -18,37 +18,43 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"strings"
+
+	"github.com/dolthub/dolt/go/store/prolly/message"
 
 	"github.com/dolthub/dolt/go/store/hash"
+	"github.com/dolthub/dolt/go/store/pool"
+	"github.com/dolthub/dolt/go/store/prolly/tree"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/val"
 )
 
 type Map struct {
-	root    Node
+	tuples  orderedTree[val.Tuple, val.Tuple, val.TupleDesc]
 	keyDesc val.TupleDesc
 	valDesc val.TupleDesc
-	ns      NodeStore
 }
 
-type KeyValueFn func(key, value val.Tuple) error
+type DiffFn func(context.Context, tree.Diff) error
 
 // NewMap creates an empty prolly tree Map
-func NewMap(node Node, ns NodeStore, keyDesc, valDesc val.TupleDesc) Map {
+func NewMap(node tree.Node, ns tree.NodeStore, keyDesc, valDesc val.TupleDesc) Map {
+	tuples := orderedTree[val.Tuple, val.Tuple, val.TupleDesc]{
+		root:  node,
+		ns:    ns,
+		order: keyDesc,
+	}
 	return Map{
-		root:    node,
+		tuples:  tuples,
 		keyDesc: keyDesc,
 		valDesc: valDesc,
-		ns:      ns,
 	}
 }
 
 // NewMapFromTuples creates a prolly tree Map from slice of sorted Tuples.
-func NewMapFromTuples(ctx context.Context, ns NodeStore, keyDesc, valDesc val.TupleDesc, tups ...val.Tuple) (Map, error) {
-	m := NewMap(Node{}, ns, keyDesc, valDesc)
-
-	ch, err := newEmptyTreeChunker(ctx, ns, newDefaultNodeSplitter)
+func NewMapFromTuples(ctx context.Context, ns tree.NodeStore, keyDesc, valDesc val.TupleDesc, tups ...val.Tuple) (Map, error) {
+	serializer := message.ProllyMapSerializer{Pool: ns.Pool()}
+	ch, err := tree.NewEmptyChunker(ctx, ns, serializer)
 	if err != nil {
 		return Map{}, err
 	}
@@ -58,37 +64,35 @@ func NewMapFromTuples(ctx context.Context, ns NodeStore, keyDesc, valDesc val.Tu
 	}
 
 	for i := 0; i < len(tups); i += 2 {
-		_, err = ch.Append(ctx, nodeItem(tups[i]), nodeItem(tups[i+1]))
-		if err != nil {
+		if err = ch.AddPair(ctx, tree.Item(tups[i]), tree.Item(tups[i+1])); err != nil {
 			return Map{}, err
 		}
 	}
 
-	m.root, err = ch.Done(ctx)
+	root, err := ch.Done(ctx)
 	if err != nil {
 		return Map{}, err
 	}
 
-	return m, nil
+	return NewMap(root, ns, keyDesc, valDesc), nil
 }
 
 func DiffMaps(ctx context.Context, from, to Map, cb DiffFn) error {
-	differ, err := treeDifferFromMaps(ctx, from, to)
+	return diffOrderedTrees(ctx, from.tuples, to.tuples, cb)
+}
+
+func MergeMaps(ctx context.Context, left, right, base Map, cb tree.CollisionFn) (Map, error) {
+	serializer := message.ProllyMapSerializer{Pool: left.tuples.ns.Pool()}
+	tuples, err := mergeOrderedTrees(ctx, left.tuples, right.tuples, base.tuples, cb, serializer)
 	if err != nil {
-		return err
+		return Map{}, err
 	}
 
-	for {
-		var diff Diff
-		if diff, err = differ.Next(ctx); err != nil {
-			break
-		}
-
-		if err = cb(ctx, diff); err != nil {
-			break
-		}
-	}
-	return err
+	return Map{
+		tuples:  tuples,
+		keyDesc: base.keyDesc,
+		valDesc: base.valDesc,
+	}, nil
 }
 
 // Mutate makes a MutableMap from a Map.
@@ -96,20 +100,23 @@ func (m Map) Mutate() MutableMap {
 	return newMutableMap(m)
 }
 
-// todo(andy): support this?
-//// Count returns the number of key-value pairs in the Map.
-//func (m Map) Count() uint64 {
-//	return m.root.cumulativeCount() / 2
-//}
+// Count returns the number of key-value pairs in the Map.
+func (m Map) Count() int {
+	return m.tuples.count()
+}
+
+func (m Map) Height() int {
+	return m.tuples.height()
+}
 
 // HashOf returns the Hash of this Map.
 func (m Map) HashOf() hash.Hash {
-	return m.root.hashOf()
+	return m.tuples.hashOf()
 }
 
 // Format returns the NomsBinFormat of this Map.
 func (m Map) Format() *types.NomsBinFormat {
-	return m.ns.Format()
+	return m.tuples.ns.Format()
 }
 
 // Descriptors returns the TupleDesc's from this Map.
@@ -117,217 +124,165 @@ func (m Map) Descriptors() (val.TupleDesc, val.TupleDesc) {
 	return m.keyDesc, m.valDesc
 }
 
-func (m Map) Empty() bool {
-	return m.root.empty()
+func (m Map) WalkAddresses(ctx context.Context, cb tree.AddressCb) error {
+	return m.tuples.walkAddresses(ctx, cb)
+}
+
+func (m Map) WalkNodes(ctx context.Context, cb tree.NodeCb) error {
+	return m.tuples.walkNodes(ctx, cb)
 }
 
 // Get searches for the key-value pair keyed by |key| and passes the results to the callback.
 // If |key| is not present in the map, a nil key-value pair are passed.
-func (m Map) Get(ctx context.Context, key val.Tuple, cb KeyValueFn) (err error) {
-	cur, err := newLeafCursorAtItem(ctx, m.ns, m.root, nodeItem(key), m.searchNode)
-	if err != nil {
-		return err
-	}
-
-	var k, v val.Tuple
-	if cur.valid() {
-		k = val.Tuple(cur.currentKey())
-		if m.compareKeys(key, k) == 0 {
-			v = val.Tuple(cur.currentValue())
-		} else {
-			k = nil
-		}
-	}
-
-	return cb(k, v)
+func (m Map) Get(ctx context.Context, key val.Tuple, cb KeyValueFn[val.Tuple, val.Tuple]) (err error) {
+	return m.tuples.get(ctx, key, cb)
 }
 
 // Has returns true is |key| is present in the Map.
 func (m Map) Has(ctx context.Context, key val.Tuple) (ok bool, err error) {
-	cur, err := newLeafCursorAtItem(ctx, m.ns, m.root, nodeItem(key), m.searchNode)
+	return m.tuples.has(ctx, key)
+}
+
+func (m Map) Last(ctx context.Context) (key, value val.Tuple, err error) {
+	return m.tuples.last(ctx)
+}
+
+// IterAll returns a mutableMapIter that iterates over the entire Map.
+func (m Map) IterAll(ctx context.Context) (MapIter, error) {
+	return m.tuples.iterAll(ctx)
+}
+
+// IterOrdinalRange returns a MapIter for the ordinal range beginning at |start| and ending before |stop|.
+func (m Map) IterOrdinalRange(ctx context.Context, start, stop uint64) (MapIter, error) {
+	return m.tuples.iterOrdinalRange(ctx, start, stop)
+}
+
+// IterRange returns a mutableMapIter that iterates over a Range.
+func (m Map) IterRange(ctx context.Context, rng Range) (MapIter, error) {
+	if rng.isPointLookup(m.keyDesc) {
+		return m.pointLookupFromRange(ctx, rng)
+	} else {
+		return m.iterFromRange(ctx, rng)
+	}
+}
+
+// Pool returns the pool.BuffPool of the underlying tuples' tree.NodeStore
+func (m Map) Pool() pool.BuffPool {
+	return m.tuples.ns.Pool()
+}
+
+func (m Map) pointLookupFromRange(ctx context.Context, rng Range) (*pointLookup, error) {
+	search := pointLookupSearchFn(rng)
+	cur, err := tree.NewCursorFromSearchFn(ctx, m.tuples.ns, m.tuples.root, search)
 	if err != nil {
-		return false, err
+		return nil, err
+	}
+	if !cur.Valid() {
+		// map does not contain |rng|
+		return &pointLookup{}, nil
 	}
 
-	if cur.valid() {
-		k := val.Tuple(cur.currentKey())
-		ok = m.compareKeys(key, k) == 0
+	key := val.Tuple(cur.CurrentKey())
+	value := val.Tuple(cur.CurrentValue())
+	if compareBound(rng.Start, key, m.keyDesc) != 0 {
+		// map does not contain |rng|
+		return &pointLookup{}, nil
 	}
 
-	return
+	return &pointLookup{k: key, v: value}, nil
 }
 
-// IterAll returns a MutableMapRangeIter that iterates over the entire Map.
-func (m Map) IterAll(ctx context.Context) (MapRangeIter, error) {
-	rng := Range{
-		Start:   RangeCut{Unbound: true},
-		Stop:    RangeCut{Unbound: true},
-		KeyDesc: m.keyDesc,
-	}
-	return m.IterRange(ctx, rng)
+func (m Map) iterFromRange(ctx context.Context, rng Range) (*orderedTreeIter[val.Tuple, val.Tuple], error) {
+	return treeIterFromRange(ctx, m.tuples.root, m.tuples.ns, rng)
 }
 
-// IterRange returns a MutableMapRangeIter that iterates over a Range.
-func (m Map) IterRange(ctx context.Context, rng Range) (MapRangeIter, error) {
-	return m.iterFromRange(ctx, rng)
-}
-
-func (m Map) iterFromRange(ctx context.Context, rng Range) (*prollyRangeIter, error) {
+func treeIterFromRange(
+	ctx context.Context,
+	root tree.Node,
+	ns tree.NodeStore,
+	rng Range,
+) (*orderedTreeIter[val.Tuple, val.Tuple], error) {
 	var (
 		err   error
-		start *nodeCursor
-		stop  *nodeCursor
+		start *tree.Cursor
+		stop  *tree.Cursor
 	)
 
-	startSearch := m.rangeStartSearchFn(rng)
-	if rng.Start.Unbound {
-		start, err = newCursorAtStart(ctx, m.ns, m.root)
+	startSearch := rangeStartSearchFn(rng)
+	if rng.Start == nil {
+		start, err = tree.NewCursorAtStart(ctx, ns, root)
 	} else {
-		start, err = newCursorAtTuple(ctx, m.ns, m.root, rng.Start.Key, startSearch)
+		start, err = tree.NewCursorFromSearchFn(ctx, ns, root, startSearch)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	stopSearch := m.rangeStopSearchFn(rng)
-	if rng.Stop.Unbound {
-		stop, err = newCursorPastEnd(ctx, m.ns, m.root)
+	stopSearch := rangeStopSearchFn(rng)
+	if rng.Stop == nil {
+		stop, err = tree.NewCursorPastEnd(ctx, ns, root)
 	} else {
-		stop, err = newCursorAtTuple(ctx, m.ns, m.root, rng.Stop.Key, stopSearch)
+		stop, err = tree.NewCursorFromSearchFn(ctx, ns, root, stopSearch)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	if start.compare(stop) >= 0 {
+	if start.Compare(stop) >= 0 {
 		start = nil // empty range
 	}
 
-	return &prollyRangeIter{
-		curr: start,
-		stop: stop,
-	}, nil
+	return &orderedTreeIter[val.Tuple, val.Tuple]{curr: start, stop: stop}, nil
 }
 
-func (m Map) rangeStartSearchFn(rng Range) searchFn {
-	// todo(andy): inline sort.Search()
-	return func(query nodeItem, nd Node) int {
-		return sort.Search(int(nd.count), func(i int) bool {
-			q := val.Tuple(query)
-			t := val.Tuple(nd.getKey(i))
+type pointLookup struct {
+	k, v val.Tuple
+}
 
-			// compare using the range's tuple descriptor.
-			cmp := rng.KeyDesc.Compare(q, t)
-			if rng.Start.Inclusive {
-				return cmp <= 0
-			} else {
-				return cmp < 0
-			}
-		})
+var _ MapIter = &pointLookup{}
+
+func (p *pointLookup) Next(context.Context) (key, value val.Tuple, err error) {
+	if p.k == nil || p.v == nil {
+		err = io.EOF
+	} else {
+		key, value = p.k, p.v
+		p.k, p.v = nil, nil
 	}
+	return
 }
 
-func (m Map) rangeStopSearchFn(rng Range) searchFn {
-	// todo(andy): inline sort.Search()
-	return func(query nodeItem, nd Node) int {
-		return sort.Search(int(nd.count), func(i int) bool {
-			q := val.Tuple(query)
-			t := val.Tuple(nd.getKey(i))
+func newEmptyMapNode(pool pool.BuffPool) tree.Node {
+	serializer := message.ProllyMapSerializer{Pool: pool}
+	msg := serializer.Serialize(nil, nil, nil, 0)
+	return tree.NodeFromBytes(msg)
+}
 
-			// compare using the range's tuple descriptor.
-			cmp := rng.KeyDesc.Compare(q, t)
-			if rng.Stop.Inclusive {
-				return cmp < 0
-			} else {
-				return cmp <= 0
-			}
-		})
+// DebugFormat formats a Map.
+func DebugFormat(ctx context.Context, m Map) (string, error) {
+	kd, vd := m.Descriptors()
+	iter, err := m.IterAll(ctx)
+	if err != nil {
+		return "", err
 	}
-}
+	c := m.Count()
 
-// searchNode returns the smallest index where nd[i] >= query
-// Adapted from search.Sort to inline comparison.
-func (m Map) searchNode(query nodeItem, nd Node) int {
-	n := int(nd.count)
-	// Define f(-1) == false and f(n) == true.
-	// Invariant: f(i-1) == false, f(j) == true.
-	i, j := 0, n
-	for i < j {
-		h := int(uint(i+j) >> 1) // avoid overflow when computing h
-		less := m.compareItems(query, nd.getKey(h)) <= 0
-		// i ≤ h < j
-		if !less {
-			i = h + 1 // preserves f(i-1) == false
-		} else {
-			j = h // preserves f(j) == true
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Prolly Map (count: %d) {\n", c))
+	for {
+		k, v, err := iter.Next(ctx)
+		if err == io.EOF {
+			break
 		}
+		if err != nil {
+			return "", err
+		}
+
+		sb.WriteString("\t")
+		sb.WriteString(kd.Format(k))
+		sb.WriteString(": ")
+		sb.WriteString(vd.Format(v))
+		sb.WriteString(",\n")
 	}
-	// i == j, f(i-1) == false, and
-	// f(j) (= f(i)) == true  =>  answer is i.
-	return i
-}
-
-var _ searchFn = Map{}.searchNode
-
-// compareItems is a compareFn.
-func (m Map) compareItems(left, right nodeItem) int {
-	l, r := val.Tuple(left), val.Tuple(right)
-	return m.compareKeys(l, r)
-}
-
-func (m Map) compareKeys(left, right val.Tuple) int {
-	return int(m.keyDesc.Compare(left, right))
-}
-
-type prollyRangeIter struct {
-	// current tuple location
-	curr *nodeCursor
-	// non-inclusive range stop
-	stop *nodeCursor
-}
-
-var _ rangeIter = &prollyRangeIter{}
-var _ MapRangeIter = &prollyRangeIter{}
-
-func (it *prollyRangeIter) Next(ctx context.Context) (key, value val.Tuple, err error) {
-	if it.curr == nil {
-		return nil, nil, io.EOF
-	}
-
-	key = it.curr.nd.keys.GetSlice(it.curr.idx)
-	value = it.curr.nd.values.GetSlice(it.curr.idx)
-
-	_, err = it.curr.advance(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	if it.curr.compare(it.stop) >= 0 {
-		// past the end of the range
-		it.curr = nil
-	}
-
-	return
-}
-
-func (it *prollyRangeIter) current() (key, value val.Tuple) {
-	// |it.curr| is set to nil when its range is exhausted
-	if it.curr != nil && it.curr.valid() {
-		key = it.curr.nd.keys.GetSlice(it.curr.idx)
-		value = it.curr.nd.values.GetSlice(it.curr.idx)
-	}
-	return
-}
-
-func (it *prollyRangeIter) iterate(ctx context.Context) (err error) {
-	_, err = it.curr.advance(ctx)
-	if err != nil {
-		return err
-	}
-
-	if it.curr.compare(it.stop) >= 0 {
-		// past the end of the range
-		it.curr = nil
-	}
-
-	return
+	sb.WriteString("}")
+	return sb.String(), nil
 }

@@ -99,17 +99,15 @@ func runSync(ctx context.Context, args []string) int {
 
 	sourceRef, err := types.NewRef(sourceObj, sourceVRW.Format())
 	util.CheckError(err)
-	sinkRef, sinkExists, err := sinkDataset.MaybeHeadRef()
-	util.CheckError(err)
+	sinkAddr, sinkExists := sinkDataset.MaybeHeadAddr()
 	nonFF := false
 	srcCS := datas.ChunkStoreFromDatabase(sourceStore)
 	sinkCS := datas.ChunkStoreFromDatabase(sinkDB)
-	wrf, err := types.WalkRefsForChunkStore(srcCS)
-	util.CheckError(err)
+	waf := types.WalkAddrsForNBF(sourceVRW.Format())
 	f := func() error {
 		defer profile.MaybeStartProfile().Stop()
 		addr := sourceRef.TargetHash()
-		err := pull.Pull(ctx, srcCS, sinkCS, wrf, addr, progressCh)
+		err := pull.Pull(ctx, srcCS, sinkCS, waf, addr, progressCh)
 
 		if err != nil {
 			return err
@@ -140,8 +138,8 @@ func runSync(ctx context.Context, args []string) int {
 		status.Done()
 	} else if !sinkExists {
 		fmt.Printf("All chunks already exist at destination! Created new dataset %s.\n", args[1])
-	} else if nonFF && !sourceRef.Equals(sinkRef) {
-		fmt.Printf("Abandoning %s; new head is %s\n", sinkRef.TargetHash(), sourceRef.TargetHash())
+	} else if nonFF && sourceRef.TargetHash() != sinkAddr {
+		fmt.Printf("Abandoning %s; new head is %s\n", sinkAddr, sourceRef.TargetHash())
 	} else {
 		fmt.Printf("Dataset %s is already up to date.\n", args[1])
 	}

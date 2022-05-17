@@ -105,7 +105,7 @@ func printSchemas(ctx context.Context, apr *argparser.ArgParseResults, dEnv *env
 			args = args[1:]
 
 			var err error
-			root, err = cm.GetRootValue()
+			root, err = cm.GetRootValue(ctx)
 
 			if err != nil {
 				verr = errhand.BuildDError("unable to get root value").AddCause(err).Build()
@@ -135,7 +135,7 @@ func printSchemas(ctx context.Context, apr *argparser.ArgParseResults, dEnv *env
 			}
 		}
 
-		opts := editor.Options{Deaf: dEnv.DbEaFactory()}
+		opts := editor.Options{Deaf: dEnv.DbEaFactory(), Tempdir: dEnv.TempTableFilesDir()}
 		sqlCtx, engine, _ := dsqle.PrepareCreateTableStmt(ctx, dsqle.NewUserSpaceDatabase(root, opts))
 
 		var notFound []string

@@ -25,6 +25,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql/analyzer"
 	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/dolthub/go-mysql-server/sql/plan"
+	"github.com/dolthub/go-mysql-server/sql/transform"
 
 	"github.com/dolthub/dolt/go/cmd/dolt/commands/engine"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
@@ -43,15 +44,16 @@ const (
 	tableWriterStatUpdateRate = 64 * 1024
 )
 
-// type SqlEngineTableWriter is a utility for importing a set of rows through the sql engine.
+// SqlEngineTableWriter is a utility for importing a set of rows through the sql engine.
 type SqlEngineTableWriter struct {
 	se     *engine.SqlEngine
 	sqlCtx *sql.Context
 
-	tableName string
-	database  string
-	contOnErr bool
-	force     bool
+	tableName  string
+	database   string
+	contOnErr  bool
+	force      bool
+	disableFks bool
 
 	statsCB noms.StatsCB
 	stats   types.AppliedEditStats
@@ -75,6 +77,7 @@ func NewSqlEngineTableWriter(ctx context.Context, dEnv *env.DoltEnv, createTable
 		return true, nil
 	})
 
+	// Simplest path would have our import path be a layer over load data
 	se, err := engine.NewSqlEngine(ctx, mrEnv, engine.FormatCsv, dbName, false, nil, false)
 	if err != nil {
 		return nil, err
@@ -93,12 +96,9 @@ func NewSqlEngineTableWriter(ctx context.Context, dEnv *env.DoltEnv, createTable
 		return nil, err
 	}
 
-	var doltCreateTableSchema sql.PrimaryKeySchema
-	if options.Operation == CreateOp {
-		doltCreateTableSchema, err = sqlutil.FromDoltSchema(options.TableToWriteTo, createTableSchema)
-		if err != nil {
-			return nil, err
-		}
+	doltCreateTableSchema, err := sqlutil.FromDoltSchema(options.TableToWriteTo, createTableSchema)
+	if err != nil {
+		return nil, err
 	}
 
 	doltRowOperationSchema, err := sqlutil.FromDoltSchema(options.TableToWriteTo, rowOperationSchema)
@@ -107,10 +107,11 @@ func NewSqlEngineTableWriter(ctx context.Context, dEnv *env.DoltEnv, createTable
 	}
 
 	return &SqlEngineTableWriter{
-		se:        se,
-		sqlCtx:    sqlCtx,
-		contOnErr: options.ContinueOnErr,
-		force:     options.Force,
+		se:         se,
+		sqlCtx:     sqlCtx,
+		contOnErr:  options.ContinueOnErr,
+		force:      options.Force,
+		disableFks: options.DisableFks,
 
 		database:  dbName,
 		tableName: options.TableToWriteTo,
@@ -146,10 +147,11 @@ func NewSqlEngineTableWriterWithEngine(ctx *sql.Context, eng *sqle.Engine, db ds
 	}
 
 	return &SqlEngineTableWriter{
-		se:        engine.NewRebasedSqlEngine(eng, map[string]dsqle.SqlDatabase{db.Name(): db}),
-		sqlCtx:    ctx,
-		contOnErr: options.ContinueOnErr,
-		force:     options.Force,
+		se:         engine.NewRebasedSqlEngine(eng, map[string]dsqle.SqlDatabase{db.Name(): db}),
+		sqlCtx:     ctx,
+		contOnErr:  options.ContinueOnErr,
+		force:      options.Force,
+		disableFks: options.DisableFks,
 
 		database:  db.Name(),
 		tableName: options.TableToWriteTo,
@@ -172,6 +174,13 @@ func (s *SqlEngineTableWriter) WriteRows(ctx context.Context, inputChannel chan 
 		return err
 	}
 
+	if s.disableFks {
+		_, _, err = s.se.Query(s.sqlCtx, fmt.Sprintf("SET FOREIGN_KEY_CHECKS = 0"))
+		if err != nil {
+			return err
+		}
+	}
+
 	err = s.createOrEmptyTableIfNeeded()
 	if err != nil {
 		return err
@@ -183,11 +192,11 @@ func (s *SqlEngineTableWriter) WriteRows(ctx context.Context, inputChannel chan 
 		}
 
 		// If the length of the row does not match the schema then we have an update operation.
-		if len(row) != len(s.rowOperationSchema.Schema) {
+		if len(row) != len(s.tableSchema.Schema) {
 			oldRow := row[:len(row)/2]
 			newRow := row[len(row)/2:]
 
-			if ok, err := oldRow.Equals(newRow, s.rowOperationSchema.Schema); err == nil {
+			if ok, err := oldRow.Equals(newRow, s.tableSchema.Schema); err == nil {
 				if ok {
 					s.stats.SameVal++
 				} else {
@@ -208,11 +217,11 @@ func (s *SqlEngineTableWriter) WriteRows(ctx context.Context, inputChannel chan 
 	if err != nil {
 		return err
 	}
+
 	defer func() {
-		if err != nil {
-			iter.Close(s.sqlCtx) // save the error that should be propagated.
-		} else {
-			err = iter.Close(s.sqlCtx)
+		rerr := iter.Close(s.sqlCtx)
+		if err == nil {
+			err = rerr
 		}
 	}()
 
@@ -270,7 +279,7 @@ func (s *SqlEngineTableWriter) TableSchema() sql.PrimaryKeySchema {
 // forceDropTableIfNeeded drop the given table in case the -f parameter is passed.
 func (s *SqlEngineTableWriter) forceDropTableIfNeeded() error {
 	if s.force {
-		_, _, err := s.se.Query(s.sqlCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", s.tableName))
+		_, _, err := s.se.Query(s.sqlCtx, fmt.Sprintf("DROP TABLE IF EXISTS `%s`", s.tableName))
 		return err
 	}
 
@@ -283,7 +292,7 @@ func (s *SqlEngineTableWriter) createOrEmptyTableIfNeeded() error {
 	case CreateOp:
 		return s.createTable()
 	case ReplaceOp:
-		_, _, err := s.se.Query(s.sqlCtx, fmt.Sprintf("TRUNCATE TABLE %s", s.tableName))
+		_, _, err := s.se.Query(s.sqlCtx, fmt.Sprintf("TRUNCATE TABLE `%s`", s.tableName))
 		return err
 	default:
 		return nil
@@ -345,7 +354,7 @@ func (s *SqlEngineTableWriter) createInsertImportNode(source chan sql.Row, ignor
 	analyzed = analyzer.StripPassthroughNodes(analyzed)
 
 	// Get the first insert (wrapped with the error handler)
-	plan.Inspect(analyzed, func(node sql.Node) bool {
+	transform.Inspect(analyzed, func(node sql.Node) bool {
 		switch n := node.(type) {
 		case *plan.InsertInto:
 			analyzed = n

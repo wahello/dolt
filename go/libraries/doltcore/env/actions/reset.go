@@ -40,7 +40,7 @@ func resetHardTables(ctx context.Context, dbData env.DbData, cSpecStr string, ro
 			return nil, doltdb.Roots{}, err
 		}
 
-		roots.Head, err = newHead.GetRootValue()
+		roots.Head, err = newHead.GetRootValue(ctx)
 		if err != nil {
 			return nil, doltdb.Roots{}, err
 		}
@@ -107,7 +107,7 @@ func ResetHard(ctx context.Context, dEnv *env.DoltEnv, cSpecStr string, roots do
 		return err
 	}
 
-	err = dEnv.UpdateWorkingSet(ctx, ws.WithWorkingRoot(roots.Working).WithStagedRoot(roots.Staged))
+	err = dEnv.UpdateWorkingSet(ctx, ws.WithWorkingRoot(roots.Working).WithStagedRoot(roots.Staged).ClearMerge())
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func ResetSoftToRef(ctx context.Context, dbData env.DbData, cSpecStr string) err
 		return err
 	}
 
-	foundRoot, err := newHead.GetRootValue()
+	foundRoot, err := newHead.GetRootValue(ctx)
 	if err != nil {
 		return err
 	}

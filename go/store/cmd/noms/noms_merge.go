@@ -35,6 +35,7 @@ import (
 	"github.com/dolthub/dolt/go/store/config"
 	"github.com/dolthub/dolt/go/store/d"
 	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/merge"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/util/status"
@@ -98,28 +99,19 @@ func runMerge(ctx context.Context, args []string) int {
 	closer()
 	util.CheckErrorNoUsage(err)
 
-	leftHeadRef, ok, err := leftDS.MaybeHeadRef()
-	d.PanicIfError(err)
-
+	leftHeadAddr, ok := leftDS.MaybeHeadAddr()
 	if !ok {
 		fmt.Fprintln(os.Stderr, args[1]+" has no head value.")
 		return 1
 	}
 
-	rightHeadRef, ok, err := rightDS.MaybeHeadRef()
-	d.PanicIfError(err)
-
+	rightHeadAddr, ok := rightDS.MaybeHeadAddr()
 	if !ok {
 		fmt.Fprintln(os.Stderr, args[2]+" has no head value.")
 		return 1
 	}
 
-	p, err := types.NewList(ctx, vrw, leftHeadRef, rightHeadRef)
-	d.PanicIfError(err)
-
-	_, err = db.Commit(ctx, outDS, merged, datas.CommitOptions{
-		ParentsList: p,
-	})
+	_, err = db.Commit(ctx, outDS, merged, datas.CommitOptions{Parents: []hash.Hash{leftHeadAddr, rightHeadAddr}})
 	d.PanicIfError(err)
 
 	status.Printf("Done")
@@ -181,23 +173,27 @@ func getMergeCandidates(ctx context.Context, db datas.Database, vrw types.ValueR
 		return nil, nil, nil, err
 	}
 
-	vfld, ok, err := ancestorCommit.MaybeGet(datas.ValueField)
+	vfld, err := datas.GetCommittedValue(ctx, vrw, ancestorCommit)
 	d.PanicIfError(err)
-	d.PanicIfFalse(ok)
+	d.PanicIfFalse(vfld != nil)
 	return leftHead, rightHead, vfld, nil
 
 }
 
 func getCommonAncestor(ctx context.Context, r1, r2 types.Ref, vr types.ValueReader) (a types.Struct, found bool) {
-	aRef, found, err := datas.FindCommonAncestor(ctx, r1, r2, vr, vr)
+	c1, err := datas.LoadCommitRef(ctx, vr, r1)
+	d.PanicIfError(err)
+	c2, err := datas.LoadCommitRef(ctx, vr, r2)
+	d.PanicIfError(err)
+	aaddr, found, err := datas.FindCommonAncestor(ctx, c1, c2, vr, vr)
 	d.PanicIfError(err)
 	if !found {
 		return
 	}
-	v, err := vr.ReadValue(ctx, aRef.TargetHash())
+	v, err := vr.ReadValue(ctx, aaddr)
 	d.PanicIfError(err)
 	if v == nil {
-		panic(aRef.TargetHash().String() + " not found")
+		panic(aaddr.String() + " not found")
 	}
 
 	isCm, err := datas.IsCommit(v)

@@ -369,7 +369,7 @@ func maybeResolve(ctx context.Context, dEnv *env.DoltEnv, spec string) (*doltdb.
 		return nil, false
 	}
 
-	root, err := cm.GetRootValue()
+	root, err := cm.GetRootValue(ctx)
 	if err != nil {
 		return nil, false
 	}
@@ -403,12 +403,6 @@ func diffUserTables(ctx context.Context, fromRoot, toRoot *doltdb.RootValue, dAr
 
 		if dArgs.diffOutput == TabularDiffOutput {
 			printTableDiffSummary(td)
-
-			// if we're in standard output mode, follow Git convention
-			// and don't print data diffs for added/dropped tables
-			if td.IsDrop() || td.IsAdd() {
-				continue
-			}
 		}
 
 		if tblName == doltdb.DocTableName {
@@ -453,10 +447,6 @@ func diffSchemas(ctx context.Context, toRoot *doltdb.RootValue, td diff.TableDel
 	}
 
 	if dArgs.diffOutput == TabularDiffOutput {
-		if td.IsDrop() || td.IsAdd() {
-			panic("cannot perform tabular schema diff for added/dropped tables")
-		}
-
 		return printShowCreateTableDiff(ctx, td)
 	}
 
@@ -469,13 +459,25 @@ func printShowCreateTableDiff(ctx context.Context, td diff.TableDelta) errhand.V
 		return errhand.BuildDError("cannot retrieve schema for table %s", td.ToName).AddCause(err).Build()
 	}
 
-	sqlDb := sqle.NewSingleTableDatabase(td.ToName, fromSch, td.FromFks, td.FromFksParentSch)
-	sqlCtx, engine, _ := sqle.PrepareCreateTableStmt(ctx, sqlDb)
-	fromCreateStmt, err := sqle.GetCreateTableStmt(sqlCtx, engine, td.ToName)
+	var fromCreateStmt = ""
+	if td.FromTable != nil {
+		sqlDb := sqle.NewSingleTableDatabase(td.FromName, fromSch, td.FromFks, td.FromFksParentSch)
+		sqlCtx, engine, _ := sqle.PrepareCreateTableStmt(ctx, sqlDb)
+		fromCreateStmt, err = sqle.GetCreateTableStmt(sqlCtx, engine, td.FromName)
+		if err != nil {
+			return errhand.VerboseErrorFromError(err)
+		}
+	}
 
-	sqlDb = sqle.NewSingleTableDatabase(td.ToName, toSch, td.ToFks, td.ToFksParentSch)
-	sqlCtx, engine, _ = sqle.PrepareCreateTableStmt(ctx, sqlDb)
-	toCreateStmt, err := sqle.GetCreateTableStmt(sqlCtx, engine, td.ToName)
+	var toCreateStmt = ""
+	if td.ToTable != nil {
+		sqlDb := sqle.NewSingleTableDatabase(td.ToName, toSch, td.ToFks, td.ToFksParentSch)
+		sqlCtx, engine, _ := sqle.PrepareCreateTableStmt(ctx, sqlDb)
+		toCreateStmt, err = sqle.GetCreateTableStmt(sqlCtx, engine, td.ToName)
+		if err != nil {
+			return errhand.VerboseErrorFromError(err)
+		}
+	}
 
 	if fromCreateStmt != toCreateStmt {
 		cli.Println(textdiff.LineDiff(fromCreateStmt, toCreateStmt))
@@ -605,8 +607,11 @@ func diffRows(ctx context.Context, td diff.TableDelta, dArgs *diffArgs, vrw type
 	if err != nil {
 		return errhand.BuildDError("cannot retrieve schema for table %s", td.ToName).AddCause(err).Build()
 	}
+
 	if td.IsAdd() {
 		fromSch = toSch
+	} else if td.IsDrop() {
+		toSch = fromSch
 	}
 
 	fromRows, toRows, err := td.GetMaps(ctx)
@@ -809,7 +814,6 @@ func createSplitter(ctx context.Context, vrw types.ValueReadWriter, fromSch sche
 		if err != nil {
 			return nil, nil, errhand.BuildDError("Merge failed. Tables with different primary keys cannot be merged.").AddCause(err).Build()
 		}
-
 	} else {
 		unionSch = toSch
 	}
@@ -956,6 +960,7 @@ func diffSummary(ctx context.Context, td diff.TableDelta, colLen int) errhand.Ve
 	acc := diff.DiffSummaryProgress{}
 	var count int64
 	var pos int
+	eP := cli.NewEphemeralPrinter()
 	for p := range ch {
 		if ae.IsSet() {
 			break
@@ -969,8 +974,8 @@ func diffSummary(ctx context.Context, td diff.TableDelta, colLen int) errhand.Ve
 		acc.OldSize += p.OldSize
 
 		if count%10000 == 0 {
-			statusStr := fmt.Sprintf("prev size: %d, new size: %d, adds: %d, deletes: %d, modifications: %d", acc.OldSize, acc.NewSize, acc.Adds, acc.Removes, acc.Changes)
-			pos = cli.DeleteAndPrint(pos, statusStr)
+			eP.Printf("prev size: %d, new size: %d, adds: %d, deletes: %d, modifications: %d\n", acc.OldSize, acc.NewSize, acc.Adds, acc.Removes, acc.Changes)
+			eP.Display()
 		}
 
 		count++

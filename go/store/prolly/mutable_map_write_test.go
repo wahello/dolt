@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dolthub/dolt/go/store/prolly/message"
+	"github.com/dolthub/dolt/go/store/prolly/tree"
 	"github.com/dolthub/dolt/go/store/val"
 )
 
@@ -73,6 +75,7 @@ func TestMutableMapWrites(t *testing.T) {
 
 func testPointUpdates(t *testing.T, mapCount int) {
 	orig := ascendingIntMap(t, mapCount)
+	assert.Equal(t, mapCount, orig.Count())
 
 	updates := make([][2]val.Tuple, mapCount)
 	for i := range updates {
@@ -89,7 +92,7 @@ func testPointUpdates(t *testing.T, mapCount int) {
 		require.NoError(t, err)
 
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount, countOrderedMap(t, m))
+		assert.Equal(t, mapCount, m.Count())
 
 		err = m.Get(ctx, up[0], func(k, v val.Tuple) error {
 			assert.Equal(t, up[0], k)
@@ -102,6 +105,7 @@ func testPointUpdates(t *testing.T, mapCount int) {
 
 func testMultiplePointUpdates(t *testing.T, batch int, mapCount int) {
 	orig := ascendingIntMap(t, mapCount)
+	assert.Equal(t, mapCount, orig.Count())
 
 	updates := make([][2]val.Tuple, mapCount)
 	for i := range updates {
@@ -121,7 +125,7 @@ func testMultiplePointUpdates(t *testing.T, batch int, mapCount int) {
 			require.NoError(t, err)
 		}
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount, countOrderedMap(t, m))
+		assert.Equal(t, mapCount, m.Count())
 
 		for _, up := range b {
 			err := m.Get(ctx, up[0], func(k, v val.Tuple) error {
@@ -137,6 +141,7 @@ func testMultiplePointUpdates(t *testing.T, batch int, mapCount int) {
 func testPointInserts(t *testing.T, mapCount int) {
 	// create map of even numbers
 	orig := ascendingIntMapWithStep(t, mapCount, 2)
+	assert.Equal(t, mapCount, orig.Count())
 
 	inserts := make([][2]val.Tuple, mapCount)
 	for i := range inserts {
@@ -155,7 +160,7 @@ func testPointInserts(t *testing.T, mapCount int) {
 		require.NoError(t, err)
 
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount+1, countOrderedMap(t, m))
+		assert.Equal(t, mapCount+1, m.Count())
 
 		ok, err := m.Has(ctx, in[0])
 		assert.NoError(t, err)
@@ -173,6 +178,7 @@ func testPointInserts(t *testing.T, mapCount int) {
 func testMultiplePointInserts(t *testing.T, batch int, mapCount int) {
 	// create map of even numbers
 	orig := ascendingIntMapWithStep(t, mapCount, 2)
+	assert.Equal(t, mapCount, orig.Count())
 
 	inserts := make([][2]val.Tuple, mapCount)
 	for i := range inserts {
@@ -194,7 +200,7 @@ func testMultiplePointInserts(t *testing.T, batch int, mapCount int) {
 			require.NoError(t, err)
 		}
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount+batch, countOrderedMap(t, m))
+		assert.Equal(t, mapCount+batch, m.Count())
 
 		for _, up := range b {
 			ok, err := m.Has(ctx, up[0])
@@ -213,6 +219,7 @@ func testMultiplePointInserts(t *testing.T, batch int, mapCount int) {
 
 func testPointDeletes(t *testing.T, mapCount int) {
 	orig := ascendingIntMap(t, mapCount)
+	assert.Equal(t, mapCount, orig.Count())
 
 	deletes := make([]val.Tuple, mapCount)
 	for i := range deletes {
@@ -229,7 +236,7 @@ func testPointDeletes(t *testing.T, mapCount int) {
 		assert.NoError(t, err)
 
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount-1, countOrderedMap(t, m))
+		assert.Equal(t, mapCount-1, m.Count())
 
 		ok, err := m.Has(ctx, del)
 		assert.NoError(t, err)
@@ -246,6 +253,7 @@ func testPointDeletes(t *testing.T, mapCount int) {
 
 func testMultiplePointDeletes(t *testing.T, batch int, mapCount int) {
 	orig := ascendingIntMap(t, mapCount)
+	assert.Equal(t, mapCount, orig.Count())
 
 	deletes := make([]val.Tuple, mapCount)
 	for i := range deletes {
@@ -265,7 +273,7 @@ func testMultiplePointDeletes(t *testing.T, batch int, mapCount int) {
 			require.NoError(t, err)
 		}
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount-batch, countOrderedMap(t, m))
+		assert.Equal(t, mapCount-batch, m.Count())
 
 		for _, del := range b {
 			ok, err := m.Has(ctx, del)
@@ -285,6 +293,7 @@ func testMultiplePointDeletes(t *testing.T, batch int, mapCount int) {
 func testMixedMutations(t *testing.T, batch int, mapCount int) {
 	// create map of first |mapCount| *even* numbers
 	orig := ascendingIntMapWithStep(t, mapCount, 2)
+	assert.Equal(t, mapCount, orig.Count())
 
 	mutations := make([][2]val.Tuple, mapCount*2)
 	for i := 0; i < len(mutations); i += 2 {
@@ -345,6 +354,7 @@ func testMixedMutations(t *testing.T, batch int, mapCount int) {
 
 func testInsertsOutsideExistingRange(t *testing.T, mapCount int) {
 	orig := ascendingIntMapWithStep(t, mapCount, 1)
+	assert.Equal(t, mapCount, orig.Count())
 
 	inserts := make([][2]val.Tuple, 2)
 	// insert before beginning
@@ -361,7 +371,7 @@ func testInsertsOutsideExistingRange(t *testing.T, mapCount int) {
 		require.NoError(t, err)
 
 		m := materializeMap(t, mut)
-		//assert.Equal(t, mapCount+1, countOrderedMap(t, m))
+		assert.Equal(t, mapCount+1, m.Count())
 
 		ok, err := m.Has(ctx, in[0])
 		assert.NoError(t, err)
@@ -379,6 +389,7 @@ func testInsertsOutsideExistingRange(t *testing.T, mapCount int) {
 func testBulkInserts(t *testing.T, size int) {
 	// create sparse map
 	orig := ascendingIntMapWithStep(t, size, size)
+	assert.Equal(t, size, orig.Count())
 
 	// make 10x as many inserts as the size of the map
 	inserts := make([][2]val.Tuple, size*10)
@@ -398,7 +409,7 @@ func testBulkInserts(t *testing.T, size int) {
 	}
 
 	m := materializeMap(t, mut)
-	//assert.Equal(t, size*11, countOrderedMap(t, m))
+	assert.Equal(t, size*11, m.Count())
 
 	for _, in := range inserts {
 		ok, err := m.Has(ctx, in[0])
@@ -420,7 +431,7 @@ func ascendingIntMap(t *testing.T, count int) Map {
 
 func ascendingIntMapWithStep(t *testing.T, count, step int) Map {
 	ctx := context.Background()
-	ns := newTestNodeStore()
+	ns := tree.NewTestNodeStore()
 
 	tuples := make([][2]val.Tuple, count)
 	for i := range tuples {
@@ -428,22 +439,18 @@ func ascendingIntMapWithStep(t *testing.T, count, step int) Map {
 		tuples[i][0], tuples[i][1] = makePut(v, v)
 	}
 
-	chunker, err := newEmptyTreeChunker(ctx, ns, newDefaultNodeSplitter)
+	serializer := message.ProllyMapSerializer{Pool: ns.Pool()}
+	chunker, err := tree.NewEmptyChunker(ctx, ns, serializer)
 	require.NoError(t, err)
 
 	for _, pair := range tuples {
-		_, err := chunker.Append(ctx, nodeItem(pair[0]), nodeItem(pair[1]))
+		err = chunker.AddPair(ctx, tree.Item(pair[0]), tree.Item(pair[1]))
 		require.NoError(t, err)
 	}
 	root, err := chunker.Done(ctx)
 	require.NoError(t, err)
 
-	return Map{
-		root:    root,
-		keyDesc: mutKeyDesc,
-		valDesc: mutValDesc,
-		ns:      ns,
-	}
+	return NewMap(root, ns, mutKeyDesc, mutKeyDesc)
 }
 
 var mutKeyDesc = val.NewTupleDescriptor(
@@ -475,15 +482,17 @@ func materializeMap(t *testing.T, mut MutableMap) Map {
 	ctx := context.Background()
 
 	// ensure edits are provided in order
-	iter := mut.overlay.mutations()
-	prev, _ := iter.nextMutation(ctx)
+	err := mut.ApplyPending(ctx)
+	require.NoError(t, err)
+	iter := mut.tuples.mutations()
+	prev, _ := iter.NextMutation(ctx)
 	require.NotNil(t, prev)
 	for {
-		next, _ := iter.nextMutation(ctx)
+		next, _ := iter.NextMutation(ctx)
 		if next == nil {
 			break
 		}
-		cmp := mut.prolly.compareKeys(prev, next)
+		cmp := mut.keyDesc.Compare(val.Tuple(prev), val.Tuple(next))
 		assert.True(t, cmp < 0)
 		prev = next
 	}

@@ -65,6 +65,7 @@ teardown() {
 }
 
 @test "merge: --abort restores working changes" {
+    skip_nbf_dolt_1
     dolt branch other
 
     dolt sql -q "INSERT INTO test1 VALUES (0,10,10),(1,11,11);"
@@ -170,6 +171,7 @@ teardown() {
 }
 
 @test "merge: dolt commit fails on table with conflict" {
+    skip_nbf_dolt_1
     dolt checkout -b merge_branch
     dolt SQL -q "INSERT INTO test1 values (0,1,1)"
     dolt add test1
@@ -193,6 +195,7 @@ teardown() {
 }
 
 @test "merge: dolt commit fails with unmerged tables in working set" {
+    skip_nbf_dolt_1
     dolt checkout -b merge_branch
     dolt SQL -q "INSERT INTO test1 values (0,1,1)"
     dolt add test1
@@ -319,6 +322,7 @@ teardown() {
 }
 
 @test "merge: Add tables with same schema on two branches, merge" {
+    skip_nbf_dolt_1
     dolt branch other
     dolt sql <<SQL
 CREATE TABLE quiz (pk int PRIMARY KEY);
@@ -347,6 +351,7 @@ SQL
 }
 
 @test "merge: Add views on two branches, merge" {
+    skip_nbf_dolt_1
     dolt branch other
     dolt sql -q "CREATE VIEW pkpk AS SELECT pk*pk FROM test1;"
     dolt add . && dolt commit -m "added view on table test1"
@@ -408,7 +413,7 @@ SQL
     dolt merge other
 }
 
-@test "merge: compound unique index conflict" {
+@test "merge: composite unique index conflict" {
     dolt sql <<SQL
 CREATE TABLE test (
     pk int PRIMARY KEY,
@@ -432,6 +437,44 @@ SQL
 
     skip "merge fails on unique index violation, should log conflict"
     dolt merge other
+}
+
+@test "merge: composite indexes should be consistent post-merge" {
+    dolt sql <<SQL
+CREATE TABLE test (
+    id int PRIMARY KEY,
+    c0 int,
+    c1 int,
+    INDEX idx_c0_c1 (c0, c1)
+);
+INSERT INTO test VALUES (1, 0, 0);
+SQL
+    dolt commit -am "initial data"
+    dolt branch right
+
+    dolt sql -q "UPDATE test SET c0 = 1;"
+    dolt commit -am "left commit"
+
+    dolt checkout right
+    dolt sql -q "UPDATE test SET c1 = 1;"
+    dolt commit -am "right commit"
+
+    dolt checkout main
+    dolt merge right && dolt commit -am "merge"
+
+    # left composite index left-over
+    run dolt sql -r csv -q "SELECT count(*) from test WHERE c0 = 1 AND c1 = 0;"
+    [ "$status" -eq 0 ]
+    [ ${lines[1]} -eq 0 ]
+
+    # right composite index left-over
+    run dolt sql -r csv -q "SELECT count(*) from test WHERE c0 = 0 AND c1 = 1;"
+    [ "$status" -eq 0 ]
+    [ ${lines[1]} -eq 0 ]
+
+    run dolt sql -r csv -q "SELECT count(*) from test WHERE c0 = 1 AND c1 = 1;"
+    [ "$status" -eq 0 ]
+    [ ${lines[1]} -eq 1 ]
 }
 
 @test "merge: merge a branch with a new table" {

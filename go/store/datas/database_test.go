@@ -45,7 +45,7 @@ func TestRemoteDatabase(t *testing.T) {
 
 func TestValidateRef(t *testing.T) {
 	st := &chunks.TestStorage{}
-	db := NewDatabase(st.NewView()).(*database)
+	db := NewDatabase(st.NewViewWithDefaultFormat()).(*database)
 	defer db.Close()
 	b := types.Bool(true)
 	r, err := db.WriteValue(context.Background(), b)
@@ -53,7 +53,7 @@ func TestValidateRef(t *testing.T) {
 
 	_, err = db.validateRefAsCommit(context.Background(), r)
 	assert.Error(t, err)
-	_, err = db.validateRefAsCommit(context.Background(), mustRef(types.NewRef(b, types.Format_7_18)))
+	_, err = db.validateRefAsCommit(context.Background(), mustRef(types.NewRef(b, db.Format())))
 }
 
 type DatabaseSuite struct {
@@ -70,7 +70,7 @@ type LocalDatabaseSuite struct {
 func (suite *LocalDatabaseSuite) SetupTest() {
 	suite.storage = &chunks.TestStorage{}
 	suite.makeDb = NewDatabase
-	suite.db = suite.makeDb(suite.storage.NewView()).(*database)
+	suite.db = suite.makeDb(suite.storage.NewViewWithDefaultFormat()).(*database)
 }
 
 type RemoteDatabaseSuite struct {
@@ -82,7 +82,7 @@ func (suite *RemoteDatabaseSuite) SetupTest() {
 	suite.makeDb = func(cs chunks.ChunkStore) Database {
 		return NewDatabase(cs)
 	}
-	suite.db = suite.makeDb(suite.storage.NewView()).(*database)
+	suite.db = suite.makeDb(suite.storage.NewViewWithDefaultFormat()).(*database)
 }
 
 func (suite *DatabaseSuite) TearDownTest() {
@@ -92,7 +92,7 @@ func (suite *DatabaseSuite) TearDownTest() {
 func (suite *RemoteDatabaseSuite) TestWriteRefToNonexistentValue() {
 	ds, err := suite.db.GetDataset(context.Background(), "foo")
 	suite.NoError(err)
-	r, err := types.NewRef(types.Bool(true), types.Format_7_18)
+	r, err := types.NewRef(types.Bool(true), suite.db.Format())
 	suite.NoError(err)
 	suite.Panics(func() { CommitValue(context.Background(), suite.db, ds, r) })
 }
@@ -121,7 +121,7 @@ func (suite *DatabaseSuite) TestCompletenessCheck() {
 	suite.NoError(err)
 
 	s = mustHeadValue(ds1).(types.Set)
-	ref, err := types.NewRef(types.Float(1000), types.Format_7_18)
+	ref, err := types.NewRef(types.Float(1000), suite.db.Format())
 	suite.NoError(err)
 	se, err = s.Edit().Insert(ref)
 	suite.NoError(err)
@@ -145,7 +145,7 @@ func (suite *DatabaseSuite) TestRebase() {
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds1).Equals(b))
 
-	interloper := suite.makeDb(suite.storage.NewView())
+	interloper := suite.makeDb(suite.storage.NewViewWithDefaultFormat())
 	defer interloper.Close()
 
 	// Concurrent change, to move root out from under my feet:
@@ -172,7 +172,7 @@ func (suite *DatabaseSuite) TestRebase() {
 func (suite *DatabaseSuite) TestCommitProperlyTracksRoot() {
 	id1, id2 := "testdataset", "othertestdataset"
 
-	db1 := suite.makeDb(suite.storage.NewView())
+	db1 := suite.makeDb(suite.storage.NewViewWithDefaultFormat())
 	defer db1.Close()
 	ds1, err := db1.GetDataset(context.Background(), id1)
 	suite.NoError(err)
@@ -180,7 +180,7 @@ func (suite *DatabaseSuite) TestCommitProperlyTracksRoot() {
 	ds1, err = CommitValue(context.Background(), db1, ds1, ds1HeadVal)
 	suite.NoError(err)
 
-	db2 := suite.makeDb(suite.storage.NewView())
+	db2 := suite.makeDb(suite.storage.NewViewWithDefaultFormat())
 	defer db2.Close()
 	ds2, err := db2.GetDataset(context.Background(), id2)
 	suite.NoError(err)
@@ -210,31 +210,35 @@ func (suite *DatabaseSuite) TestDatabaseCommit() {
 	// ds2 matches the Datasets Map in suite.db
 	suiteDS, err := suite.db.GetDataset(context.Background(), datasetID)
 	suite.NoError(err)
-	headRef := mustHeadRef(suiteDS)
-	suite.True(mustHeadRef(ds2).Equals(headRef))
+	headAddr := mustHeadAddr(suiteDS)
+	suite.True(mustHeadAddr(ds2) == headAddr)
 
 	// ds2 has |a| at its head
 	h, ok, err := ds2.MaybeHeadValue()
 	suite.NoError(err)
 	suite.True(ok)
 	suite.True(h.Equals(a))
-	suite.Equal(uint64(1), mustHeadRef(ds2).Height())
+	comm, err := commitFromValue(suite.db.Format(), mustHead(ds2))
+	suite.NoError(err)
+	suite.Equal(uint64(1), comm.Height())
 
 	ds = ds2
-	aCommitRef := mustHeadRef(ds) // to be used to test disallowing of non-fastforward commits below
+	aCommitAddr := mustHeadAddr(ds) // to be used to test disallowing of non-fastforward commits below
 
 	// |a| <- |b|
 	b := types.String("b")
 	ds, err = CommitValue(context.Background(), suite.db, ds, b)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(b))
-	suite.Equal(uint64(2), mustHeadRef(ds).Height())
+	comm, err = commitFromValue(suite.db.Format(), mustHead(ds))
+	suite.NoError(err)
+	suite.Equal(uint64(2), comm.Height())
 
 	// |a| <- |b|
 	//   \----|c|
 	// Should be disallowed.
 	c := types.String("c")
-	_, err = suite.db.Commit(context.Background(), ds, c, newOpts(suite.db, aCommitRef))
+	_, err = suite.db.Commit(context.Background(), ds, c, newOpts(suite.db, aCommitAddr))
 	suite.Error(err)
 	suite.True(mustHeadValue(ds).Equals(b))
 
@@ -243,11 +247,13 @@ func (suite *DatabaseSuite) TestDatabaseCommit() {
 	ds, err = CommitValue(context.Background(), suite.db, ds, d)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(d))
-	suite.Equal(uint64(3), mustHeadRef(ds).Height())
+	comm, err = commitFromValue(suite.db.Format(), mustHead(ds))
+	suite.NoError(err)
+	suite.Equal(uint64(3), comm.Height())
 
 	// Attempt to recommit |b| with |a| as parent.
 	// Should be disallowed.
-	_, err = suite.db.Commit(context.Background(), ds, b, newOpts(suite.db, aCommitRef))
+	_, err = suite.db.Commit(context.Background(), ds, b, newOpts(suite.db, aCommitAddr))
 	suite.Error(err)
 	suite.True(mustHeadValue(ds).Equals(d))
 
@@ -258,7 +264,7 @@ func (suite *DatabaseSuite) TestDatabaseCommit() {
 	suite.NoError(err)
 
 	// Get a fresh database, and verify that both datasets are present
-	newDB := suite.makeDb(suite.storage.NewView())
+	newDB := suite.makeDb(suite.storage.NewViewWithDefaultFormat())
 	defer newDB.Close()
 	datasets2, err := newDB.Datasets(context.Background())
 	suite.NoError(err)
@@ -266,12 +272,16 @@ func (suite *DatabaseSuite) TestDatabaseCommit() {
 }
 
 func mustNomsMap(t *testing.T, dsm DatasetsMap) types.Map {
-	m, ok := dsm.toNomsMap()
+	m, ok := dsm.(nomsDatasetsMap)
 	require.True(t, ok)
-	return m
+	return m.m
 }
 
 func (suite *DatabaseSuite) TestDatasetsMapType() {
+	if suite.db.Format().UsesFlatbuffers() {
+		suite.T().Skip()
+	}
+
 	dsID1, dsID2 := "ds1", "ds2"
 
 	datasets, err := suite.db.Datasets(context.Background())
@@ -332,11 +342,8 @@ func assertMapOfStringToRefOfCommit(ctx context.Context, proposed, datasets type
 	d.PanicIfError(derr)
 }
 
-func newOpts(vrw types.ValueReadWriter, parents ...types.Value) CommitOptions {
-	pList, err := types.NewList(context.Background(), vrw, parents...)
-	d.PanicIfError(err)
-
-	return CommitOptions{ParentsList: pList}
+func newOpts(vrw types.ValueReadWriter, parent hash.Hash) CommitOptions {
+	return CommitOptions{Parents: []hash.Hash{parent}}
 }
 
 func (suite *DatabaseSuite) TestDatabaseDuplicateCommit() {
@@ -388,15 +395,14 @@ func (suite *DatabaseSuite) TestDatabaseDelete() {
 	suite.False(present, "Dataset %s should not be present", datasetID1)
 
 	// Get a fresh database, and verify that only ds2 is present
-	newDB := suite.makeDb(suite.storage.NewView())
+	newDB := suite.makeDb(suite.storage.NewViewWithDefaultFormat())
 	defer newDB.Close()
 	datasets, err = newDB.Datasets(context.Background())
 	suite.NoError(err)
 	suite.Equal(uint64(1), datasets.Len())
 	newDS, err := newDB.GetDataset(context.Background(), datasetID2)
 	suite.NoError(err)
-	_, present, err = newDS.MaybeHeadRef()
-	suite.NoError(err)
+	present = newDS.HasHead()
 	suite.True(present, "Dataset %s should be present", datasetID2)
 }
 
@@ -414,7 +420,7 @@ func (suite *DatabaseSuite) TestCommitWithConcurrentChunkStoreUse() {
 	suite.True(mustHeadValue(ds1).Equals(b))
 
 	// Craft DB that will allow me to move the backing ChunkStore while suite.db isn't looking
-	interloperCS := suite.storage.NewView()
+	interloperCS := suite.storage.NewViewWithDefaultFormat()
 	interloper := suite.makeDb(interloperCS)
 	defer interloper.Close()
 
@@ -455,48 +461,47 @@ func (suite *DatabaseSuite) TestCommitWithConcurrentChunkStoreUse() {
 func (suite *DatabaseSuite) TestDeleteWithConcurrentChunkStoreUse() {
 	datasetID := "ds1"
 	ds1, err := suite.db.GetDataset(context.Background(), datasetID)
-	suite.NoError(err)
+	suite.Require().NoError(err)
 
 	// Setup:
 	// ds1: |a| <- |b|
 	ds1, _ = CommitValue(context.Background(), suite.db, ds1, types.String("a"))
 	b := types.String("b")
 	ds1, err = CommitValue(context.Background(), suite.db, ds1, b)
-	suite.NoError(err)
-	suite.True(mustHeadValue(ds1).Equals(b))
+	suite.Require().NoError(err)
+	suite.Require().True(mustHeadValue(ds1).Equals(b))
 
 	// Craft DB that will allow me to move the backing ChunkStore while suite.db isn't looking
-	interloper := suite.makeDb(suite.storage.NewView())
+	interloper := suite.makeDb(suite.storage.NewViewWithDefaultFormat())
 	defer interloper.Close()
 
 	// Concurrent change, to move root out from under my feet:
 	// ds1: |a| <- |b| <- |e|
 	e := types.String("e")
 	iDS, err := interloper.GetDataset(context.Background(), datasetID)
-	suite.NoError(err)
+	suite.Require().NoError(err)
 	iDS, concErr := CommitValue(context.Background(), interloper, iDS, e)
-	suite.NoError(concErr)
-	suite.True(mustHeadValue(iDS).Equals(e))
+	suite.Require().NoError(concErr)
+	suite.Require().True(mustHeadValue(iDS).Equals(e))
 
 	// Attempt to delete ds1 via suite.db, which should fail due to the above
 	_, err = suite.db.Delete(context.Background(), ds1)
-	suite.Error(err)
+	suite.Require().Error(err)
 
 	// Concurrent change, but to some other dataset. This shouldn't stop changes to ds1.
 	// ds1: |a| <- |b| <- |e|
 	// ds2: |stuff|
 	stf := types.String("stuff")
 	otherDS, err := suite.db.GetDataset(context.Background(), "other")
-	suite.NoError(err)
-	iDS, concErr = CommitValue(context.Background(), interloper, otherDS, stf)
-	suite.NoError(concErr)
-	suite.True(mustHeadValue(iDS).Equals(stf))
+	suite.Require().NoError(err)
+	iDS, concErr = CommitValue(context.Background(), suite.db, otherDS, stf)
+	suite.Require().NoError(concErr)
+	suite.Require().True(mustHeadValue(iDS).Equals(stf))
 
 	// Attempted concurrent delete, which should proceed without a problem
 	ds1, err = suite.db.Delete(context.Background(), ds1)
-	suite.NoError(err)
-	_, present, err := ds1.MaybeHeadRef()
-	suite.NoError(err)
+	suite.Require().NoError(err)
+	present := ds1.HasHead()
 	suite.False(present, "Dataset %s should not be present", datasetID)
 }
 
@@ -510,19 +515,19 @@ func (suite *DatabaseSuite) TestSetHead() {
 	a := types.String("a")
 	ds, err = CommitValue(context.Background(), suite.db, ds, a)
 	suite.NoError(err)
-	aCommitRef := mustHeadRef(ds) // To use in non-FF SetHeadToCommit() below.
+	aCommitAddr := mustHeadAddr(ds) // To use in non-FF SetHeadToCommit() below.
 
 	b := types.String("b")
 	ds, err = CommitValue(context.Background(), suite.db, ds, b)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(b))
-	bCommitRef := mustHeadRef(ds) // To use in FF SetHeadToCommit() below.
+	bCommitAddr := mustHeadAddr(ds) // To use in FF SetHeadToCommit() below.
 
-	ds, err = suite.db.SetHead(context.Background(), ds, aCommitRef.TargetHash())
+	ds, err = suite.db.SetHead(context.Background(), ds, aCommitAddr)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(a))
 
-	ds, err = suite.db.SetHead(context.Background(), ds, bCommitRef.TargetHash())
+	ds, err = suite.db.SetHead(context.Background(), ds, bCommitAddr)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(b))
 }
@@ -536,7 +541,7 @@ func (suite *DatabaseSuite) TestFastForward() {
 	a := types.String("a")
 	ds, err = CommitValue(context.Background(), suite.db, ds, a)
 	suite.NoError(err)
-	aCommitRef := mustHeadRef(ds) // To use in non-FF cases below.
+	aCommitAddr := mustHeadAddr(ds) // To use in non-FF cases below.
 
 	b := types.String("b")
 	ds, err = CommitValue(context.Background(), suite.db, ds, b)
@@ -547,20 +552,20 @@ func (suite *DatabaseSuite) TestFastForward() {
 	ds, err = CommitValue(context.Background(), suite.db, ds, c)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(c))
-	cCommitRef := mustHeadRef(ds) // To use in FastForward() below.
+	cCommitAddr := mustHeadAddr(ds) // To use in FastForward() below.
 
 	// FastForward should disallow this, as |a| is not a descendant of |c|
-	_, err = suite.db.FastForward(context.Background(), ds, aCommitRef.TargetHash())
+	_, err = suite.db.FastForward(context.Background(), ds, aCommitAddr)
 	suite.Error(err)
 
 	// Move Head back to something earlier in the lineage, so we can test FastForward
-	ds, err = suite.db.SetHead(context.Background(), ds, aCommitRef.TargetHash())
+	ds, err = suite.db.SetHead(context.Background(), ds, aCommitAddr)
 	suite.NoError(err)
 	suite.True(mustHeadValue(ds).Equals(a))
 
 	// This should succeed, because while |a| is not a direct parent of |c|, it is an ancestor.
-	ds, err = suite.db.FastForward(context.Background(), ds, cCommitRef.TargetHash())
-	suite.NoError(err)
+	ds, err = suite.db.FastForward(context.Background(), ds, cCommitAddr)
+	suite.Require().NoError(err)
 	suite.True(mustHeadValue(ds).Equals(c))
 }
 
@@ -637,16 +642,12 @@ func (suite *DatabaseSuite) TestDatabaseHeightOfCollections() {
 }
 
 func (suite *DatabaseSuite) TestMetaOption() {
-	ds, err := suite.db.GetDataset(context.Background(), "ds1")
+	ctx := context.Background()
+	ds, err := suite.db.GetDataset(ctx, "ds1")
 	suite.NoError(err)
 
-	m, err := types.NewStruct(types.Format_7_18, "M", types.StructData{
-		"author": types.String("arv"),
-	})
-
+	ds, err = suite.db.Commit(ctx, ds, types.String("a"), CommitOptions{Meta: &CommitMeta{Name: "arv"}})
 	suite.NoError(err)
-	ds, err = suite.db.Commit(context.Background(), ds, types.String("a"), CommitOptions{Meta: m})
-	suite.NoError(err)
-	c := mustHead(ds)
-	suite.Equal(types.String("arv"), mustGetValue(mustGetValue(c.MaybeGet("meta")).(types.Struct).MaybeGet("author")))
+	meta, err := GetCommitMeta(ctx, mustHead(ds))
+	suite.Equal("arv", meta.Name)
 }

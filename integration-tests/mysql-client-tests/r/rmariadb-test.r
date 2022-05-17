@@ -52,7 +52,7 @@ got <- dbGetQuery(conn, "select * from test where pk = 1")
 want = data.frame(pk = c(1), value = c(1))
 if (!isTRUE(all.equal(want, got))) {
     print("unexpected prepared statement result")
-    print(rows)
+    print(got)
     quit(1)
 }
 
@@ -76,3 +76,14 @@ if (!ret) {
     print("Number of commits is incorrect")
     quit(1)
 }
+
+# Add a failing query and ensure that the connection does not quit.
+# cc. https://github.com/dolthub/dolt/issues/3418
+try(dbExecute(conn, "insert into test values (0, 1)"), silent = TRUE)
+one <- dbGetQuery(conn, "select 1 as pk")
+ret <- one == data.frame(pk=1)
+if (!ret) {
+    print("Number of commits is incorrect")
+    quit(1)
+}
+

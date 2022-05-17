@@ -31,12 +31,11 @@ import (
 )
 
 type DoltIndex interface {
-	sql.Index
+	sql.FilteredIndex
 	Schema() schema.Schema
 	IndexSchema() schema.Schema
-	TableData() durable.Index
-	IndexRowData() durable.Index
 	Format() *types.NomsBinFormat
+	GetDurableIndexes(*sql.Context, *doltdb.Table) (durable.Index, durable.Index, error)
 }
 
 func DoltIndexesFromTable(ctx context.Context, db, tbl string, t *doltdb.Table) (indexes []sql.Index, err error) {
@@ -69,23 +68,21 @@ func getPrimaryKeyIndex(ctx context.Context, db, tbl string, t *doltdb.Table, sc
 	if err != nil {
 		return nil, err
 	}
-
-	cols := sch.GetPKCols().GetColumns()
 	keyBld := maybeGetKeyBuilder(tableRows)
 
+	cols := sch.GetPKCols().GetColumns()
+
 	return doltIndex{
-		id:        "PRIMARY",
-		tblName:   tbl,
-		dbName:    db,
-		columns:   cols,
-		indexSch:  sch,
-		tableSch:  sch,
-		unique:    true,
-		comment:   "",
-		indexRows: tableRows,
-		tableRows: tableRows,
-		vrw:       t.ValueReadWriter(),
-		keyBld:    keyBld,
+		id:       "PRIMARY",
+		tblName:  tbl,
+		dbName:   db,
+		columns:  cols,
+		indexSch: sch,
+		tableSch: sch,
+		unique:   true,
+		comment:  "",
+		vrw:      t.ValueReadWriter(),
+		keyBld:   keyBld,
 	}, nil
 }
 
@@ -94,32 +91,24 @@ func getSecondaryIndex(ctx context.Context, db, tbl string, t *doltdb.Table, sch
 	if err != nil {
 		return nil, err
 	}
-
-	tableRows, err := t.GetRowData(ctx)
-	if err != nil {
-		return nil, err
-	}
+	keyBld := maybeGetKeyBuilder(indexRows)
 
 	cols := make([]schema.Column, idx.Count())
 	for i, tag := range idx.IndexedColumnTags() {
 		cols[i], _ = idx.GetColumn(tag)
 	}
 
-	keyBld := maybeGetKeyBuilder(indexRows)
-
 	return doltIndex{
-		id:        idx.Name(),
-		tblName:   tbl,
-		dbName:    db,
-		columns:   cols,
-		indexSch:  idx.Schema(),
-		tableSch:  sch,
-		unique:    idx.IsUnique(),
-		comment:   idx.Comment(),
-		indexRows: indexRows,
-		tableRows: tableRows,
-		vrw:       t.ValueReadWriter(),
-		keyBld:    keyBld,
+		id:       idx.Name(),
+		tblName:  tbl,
+		dbName:   db,
+		columns:  cols,
+		indexSch: idx.Schema(),
+		tableSch: sch,
+		unique:   idx.IsUnique(),
+		comment:  idx.Comment(),
+		vrw:      t.ValueReadWriter(),
+		keyBld:   keyBld,
 	}, nil
 }
 
@@ -130,12 +119,10 @@ type doltIndex struct {
 
 	columns []schema.Column
 
-	indexSch  schema.Schema
-	tableSch  schema.Schema
-	indexRows durable.Index
-	tableRows durable.Index
-	unique    bool
-	comment   string
+	indexSch schema.Schema
+	tableSch schema.Schema
+	unique   bool
+	comment  string
 
 	vrw    types.ValueReadWriter
 	keyBld *val.TupleBuilder
@@ -168,6 +155,22 @@ func (di doltIndex) NewLookup(ctx *sql.Context, ranges ...sql.Range) (sql.IndexL
 	return di.newNomsLookup(ctx, ranges...)
 }
 
+func (di doltIndex) GetDurableIndexes(ctx *sql.Context, t *doltdb.Table) (primary, secondary durable.Index, err error) {
+	primary, err = t.GetRowData(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if di.ID() == "PRIMARY" {
+		secondary = primary
+	} else {
+		secondary, err = t.GetIndexRowData(ctx, di.ID())
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return
+}
+
 func (di doltIndex) newProllyLookup(ctx *sql.Context, ranges ...sql.Range) (sql.IndexLookup, error) {
 	var err error
 	sqlRanges, err := pruneEmptyRanges(ranges)
@@ -183,9 +186,14 @@ func (di doltIndex) newProllyLookup(ctx *sql.Context, ranges ...sql.Range) (sql.
 		}
 	}
 
+	// the sql engine provides ranges that are logically disjoint in value space.
+	// however, these ranges may overlap physically within the index. Here we merge
+	// physically overlapping ranges to avoid returning duplicate tuples/rows.
+	merged := prolly.MergeOverlappingRanges(prs...)
+
 	return &doltIndexLookup{
 		idx:          di,
-		prollyRanges: prs,
+		prollyRanges: merged,
 		sqlRanges:    sqlRanges,
 	}, nil
 }
@@ -289,6 +297,15 @@ RangeLoop:
 	}, nil
 }
 
+func (di doltIndex) HandledFilters(filters []sql.Expression) []sql.Expression {
+	if types.IsFormat_DOLT_1(di.vrw.Format()) {
+		// todo(andy): handle first column filters
+		return nil
+	} else {
+		return filters
+	}
+}
+
 // Database implement sql.Index
 func (di doltIndex) Database() string {
 	return di.dbName
@@ -341,16 +358,6 @@ func (di doltIndex) IndexSchema() schema.Schema {
 // Table implements sql.Index
 func (di doltIndex) Table() string {
 	return di.tblName
-}
-
-// TableData returns the map of Table data for this index (the map of the target Table, not the index storage Table)
-func (di doltIndex) TableData() durable.Index {
-	return di.tableRows
-}
-
-// IndexRowData returns the map of index row data.
-func (di doltIndex) IndexRowData() durable.Index {
-	return di.indexRows
 }
 
 func (di doltIndex) Format() *types.NomsBinFormat {
@@ -411,113 +418,78 @@ func pruneEmptyRanges(sqlRanges []sql.Range) (pruned []sql.Range, err error) {
 	return pruned, nil
 }
 
-func prollyRangeFromSqlRange(sqlRange sql.Range, tb *val.TupleBuilder) (rng prolly.Range, err error) {
-	var lower, upper []sql.RangeCut
-	for _, expr := range sqlRange {
-		lower = append(lower, expr.LowerBound)
-		upper = append(upper, expr.UpperBound)
+func prollyRangeFromSqlRange(rng sql.Range, tb *val.TupleBuilder) (prolly.Range, error) {
+	prollyRange := prolly.Range{
+		Start: make([]prolly.RangeCut, len(rng)),
+		Stop:  make([]prolly.RangeCut, len(rng)),
+		Desc:  tb.Desc,
 	}
 
-	start := prolly.RangeCut{Inclusive: true}
-	startRow := sql.Row{}
-	for _, sc := range lower {
-		if !isBindingCut(sc) {
-			start = prolly.RangeCut{Unbound: true, Inclusive: false}
-			break
+	for i, expr := range rng {
+		if !sql.RangeCutIsBinding(expr.LowerBound) {
+			continue
 		}
-		start.Inclusive = start.Inclusive && sc.TypeAsLowerBound() == sql.Closed
-		startRow = append(startRow, sql.GetRangeCutKey(sc))
-	}
 
-	if !start.Unbound {
-		startRow, err = normalizeRangeKey(sqlRange, startRow)
+		v, err := getRangeCutValue(expr.LowerBound, rng[i].Typ)
 		if err != nil {
 			return prolly.Range{}, err
 		}
-
-		start.Key, err = tupleFromKeys(startRow, tb)
-		if err != nil {
-			return prolly.Range{}, err
-		}
-	}
-
-	stop := prolly.RangeCut{Inclusive: true}
-	stopRow := sql.Row{}
-	for _, sc := range upper {
-		if !isBindingCut(sc) {
-			stop = prolly.RangeCut{Unbound: true, Inclusive: false}
-			break
-		}
-		stop.Inclusive = stop.Inclusive && sc.TypeAsUpperBound() == sql.Closed
-		stopRow = append(stopRow, sql.GetRangeCutKey(sc))
-	}
-	if !stop.Unbound {
-		stopRow, err = normalizeRangeKey(sqlRange, stopRow)
-		if err != nil {
-			return prolly.Range{}, err
-		}
-
-		stop.Key, err = tupleFromKeys(stopRow, tb)
-		if err != nil {
-			return prolly.Range{}, err
-		}
-	}
-
-	rngDesc := tupleDescriptorForRange(tb.Desc, sqlRange, startRow, stopRow)
-
-	return prolly.Range{
-		Start:   start,
-		Stop:    stop,
-		KeyDesc: rngDesc,
-	}, nil
-}
-
-func isBindingCut(cut sql.RangeCut) bool {
-	return cut != sql.BelowAll{} && cut != sql.AboveAll{}
-}
-
-func tupleFromKeys(keys sql.Row, tb *val.TupleBuilder) (val.Tuple, error) {
-	var err error
-	for i, v := range keys {
 		if err = PutField(tb, i, v); err != nil {
-			return nil, err
+			return prolly.Range{}, err
 		}
 	}
 
-	// ranges can be defined using null values even if the index is non-null
-	return tb.BuildPermissive(sharePool), nil
-}
+	// BuildPermissive() allows nulls in non-null fields
+	tup := tb.BuildPermissive(sharePool)
 
-// normalizeRangeKey converts a range's key into a canonical value.
-func normalizeRangeKey(rng sql.Range, key sql.Row) (sql.Row, error) {
-	var err error
-	for i := range key {
-		key[i], err = rng[i].Typ.Convert(key[i])
+	for i, expr := range rng {
+		if !sql.RangeCutIsBinding(expr.LowerBound) {
+			continue
+		}
+
+		bound := expr.LowerBound.TypeAsLowerBound()
+		_, null := expr.LowerBound.(sql.NullBound)
+
+		prollyRange.Start[i] = prolly.RangeCut{
+			Value:     tup.GetField(i),
+			Inclusive: bound == sql.Closed,
+			Null:      null,
+		}
+	}
+
+	for i, expr := range rng {
+		if !sql.RangeCutIsBinding(expr.UpperBound) {
+			continue
+		}
+
+		v, err := getRangeCutValue(expr.UpperBound, rng[i].Typ)
 		if err != nil {
-			return nil, err
+			return prolly.Range{}, err
+		}
+		if err = PutField(tb, i, v); err != nil {
+			return prolly.Range{}, err
 		}
 	}
-	return key, nil
+
+	tup = tb.BuildPermissive(sharePool)
+	for i, expr := range rng {
+		if !sql.RangeCutIsBinding(expr.UpperBound) {
+			continue
+		}
+
+		bound := expr.UpperBound.TypeAsUpperBound()
+		_, null := expr.UpperBound.(sql.NullBound)
+
+		prollyRange.Stop[i] = prolly.RangeCut{
+			Value:     tup.GetField(i),
+			Inclusive: bound == sql.Closed,
+			Null:      null,
+		}
+	}
+
+	return prollyRange, nil
 }
 
-// tupleDescriptorForRange constructs a tuple descriptor suitable for range queries.
-// Range queries can be made over a prefix subset of the index's columns, so we need
-// a tuple descriptor that is aware of that subset.
-// We also need to account for range keys containing nulls and disable tuple access
-// methods that assume non-null tuples.
-func tupleDescriptorForRange(desc val.TupleDesc, rng sql.Range, start, stop sql.Row) val.TupleDesc {
-	rngDesc := val.TupleDescriptorPrefix(desc, len(rng))
-
-	for i := range start {
-		if start[i] == nil {
-			return rngDesc.WithoutFixedAccess()
-		}
-	}
-	for i := range stop {
-		if stop[i] == nil {
-			return rngDesc.WithoutFixedAccess()
-		}
-	}
-
-	return rngDesc
+func getRangeCutValue(cut sql.RangeCut, typ sql.Type) (interface{}, error) {
+	return typ.Convert(sql.GetRangeCutKey(cut))
 }

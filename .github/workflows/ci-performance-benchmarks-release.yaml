@@ -40,6 +40,9 @@ jobs:
     name: Benchmark Dolt Release vs MySQL 8
     steps:
       - uses: actions/checkout@v2
+      - uses: azure/setup-kubectl@v2.0
+        with:
+          version: 'v1.23.6'
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
@@ -65,7 +68,7 @@ jobs:
         run: ./.github/scripts/performance-benchmarking/run-benchmarks.sh
         env:
           FROM_SERVER: 'mysql'
-          FROM_VERSION: '8.0.22'
+          FROM_VERSION: '8.0.28'
           TO_SERVER: 'dolt'
           TO_VERSION: ${{ needs.set-version-actor.outputs.version }}
           MODE: 'release'

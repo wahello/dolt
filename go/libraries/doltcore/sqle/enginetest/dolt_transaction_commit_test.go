@@ -23,11 +23,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/store/types"
 )
 
 // TODO: we need tests for manual DOLT_COMMIT as well, but that's difficult with the way that functions are resolved
 //  in the engine.
 func TestDoltTransactionCommitOneClient(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		t.Skip()
+	}
+
 	// In this test, we're setting only one client to match transaction commits to dolt commits.
 	// Autocommit is disabled for the enabled client, as it's the recommended way to use this feature.
 	harness := newDoltHarness(t)
@@ -149,7 +154,7 @@ func TestDoltTransactionCommitOneClient(t *testing.T) {
 	require.NoError(t, err)
 	commit, err := db.Resolve(context.Background(), cs, headRefs[0])
 	require.NoError(t, err)
-	cm, err := commit.GetCommitMeta()
+	cm, err := commit.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Contains(t, cm.Description, "Transaction commit")
 
@@ -157,12 +162,16 @@ func TestDoltTransactionCommitOneClient(t *testing.T) {
 	require.NoError(t, err)
 	initialCommit, err := commit.GetAncestor(context.Background(), as)
 	require.NoError(t, err)
-	icm, err := initialCommit.GetCommitMeta()
+	icm, err := initialCommit.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "Initialize data repository", icm.Description)
 }
 
 func TestDoltTransactionCommitTwoClients(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		t.Skip()
+	}
+
 	// In this test, we're setting both clients to match transaction commits to dolt commits.
 	// Autocommit is disabled, as it's the recommended way to use this feature.
 	harness := newDoltHarness(t)
@@ -271,7 +280,7 @@ func TestDoltTransactionCommitTwoClients(t *testing.T) {
 	require.NoError(t, err)
 	commit2, err := db.Resolve(context.Background(), cs, headRefs[0])
 	require.NoError(t, err)
-	cm2, err := commit2.GetCommitMeta()
+	cm2, err := commit2.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Contains(t, cm2.Description, "Transaction commit")
 
@@ -279,18 +288,22 @@ func TestDoltTransactionCommitTwoClients(t *testing.T) {
 	require.NoError(t, err)
 	commit1, err := commit2.GetAncestor(context.Background(), as)
 	require.NoError(t, err)
-	cm1, err := commit1.GetCommitMeta()
+	cm1, err := commit1.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Contains(t, cm1.Description, "Transaction commit")
 
 	commit0, err := commit1.GetAncestor(context.Background(), as)
 	require.NoError(t, err)
-	cm0, err := commit0.GetCommitMeta()
+	cm0, err := commit0.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "Initialize data repository", cm0.Description)
 }
 
 func TestDoltTransactionCommitAutocommit(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		t.Skip()
+	}
+
 	// In this test, each insertion from both clients cause a commit as autocommit is enabled.
 	// Not the recommended way to use the feature, but it's permitted.
 	harness := newDoltHarness(t)
@@ -339,7 +352,7 @@ func TestDoltTransactionCommitAutocommit(t *testing.T) {
 	require.NoError(t, err)
 	commit3, err := db.Resolve(context.Background(), cs, headRefs[0])
 	require.NoError(t, err)
-	cm3, err := commit3.GetCommitMeta()
+	cm3, err := commit3.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Contains(t, cm3.Description, "Transaction commit")
 
@@ -347,24 +360,28 @@ func TestDoltTransactionCommitAutocommit(t *testing.T) {
 	require.NoError(t, err)
 	commit2, err := commit3.GetAncestor(context.Background(), as)
 	require.NoError(t, err)
-	cm2, err := commit2.GetCommitMeta()
+	cm2, err := commit2.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Contains(t, cm2.Description, "Transaction commit")
 
 	commit1, err := commit2.GetAncestor(context.Background(), as)
 	require.NoError(t, err)
-	cm1, err := commit1.GetCommitMeta()
+	cm1, err := commit1.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "Transaction commit", cm1.Description)
 
 	commit0, err := commit1.GetAncestor(context.Background(), as)
 	require.NoError(t, err)
-	cm0, err := commit0.GetCommitMeta()
+	cm0, err := commit0.GetCommitMeta(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "Initialize data repository", cm0.Description)
 }
 
 func TestDoltTransactionCommitLateFkResolution(t *testing.T) {
+	if types.IsFormat_DOLT_1(types.Format_Default) {
+		t.Skip()
+	}
+
 	harness := newDoltHarness(t)
 	enginetest.TestTransactionScript(t, harness, enginetest.TransactionTest{
 		Name: "delayed foreign key resolution with transaction commits",

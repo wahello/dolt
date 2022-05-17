@@ -65,7 +65,7 @@ func createRootAndFS() (*doltdb.DoltDB, *doltdb.RootValue, filesys.Filesys) {
 
 	cs, _ := doltdb.NewCommitSpec("master")
 	commit, _ := ddb.Resolve(context.Background(), cs, nil)
-	root, err := commit.GetRootValue()
+	root, err := commit.GetRootValue(context.Background())
 
 	if err != nil {
 		panic(err)
@@ -160,6 +160,10 @@ func TestExists(t *testing.T) {
 
 type testDataMoverOptions struct{}
 
+func (t testDataMoverOptions) IsBatched() bool {
+	return false
+}
+
 func (t testDataMoverOptions) WritesToTable() bool {
 	return true
 }
@@ -196,7 +200,7 @@ func TestCreateRdWr(t *testing.T) {
 
 		loc := test.dl
 
-		opts := editor.Options{Deaf: dEnv.DbEaFactory()}
+		opts := editor.Options{Deaf: dEnv.DbEaFactory(), Tempdir: dEnv.TempTableFilesDir()}
 
 		filePath, fpErr := dEnv.FS.Abs(strings.Split(loc.String(), ":")[1])
 		if fpErr != nil {

@@ -118,6 +118,7 @@ teardown() {
 }
 
 @test "import-create-tables: use -f to overwrite data in existing table" {
+    skip_nbf_dolt_1
     cat <<DELIM > other.csv
 pk,c1,c2,c3,c4,c5
 8,1,2,3,4,5
@@ -143,6 +144,7 @@ DELIM
 }
 
 @test "import-create-tables: use -f to overwrite data in existing table with fk constraints" {
+    skip_nbf_dolt_1
     cat <<DELIM > other.csv
 pk,c1,c2,c3,c4,c5
 8,1,2,3,4,5
@@ -162,7 +164,7 @@ DELIM
     [[ "$output" =~ "fktest already exists. Use -f to overwrite." ]] || false
     run dolt table import -c --pk=pk test 1pk5col-ints.csv -f
     [ "$status" -eq 1 ]
-    [[ "$output" =~ 'since it is referenced from table `fktest`' ]] || false
+    [[ "$output" =~ 'it is referenced in foreign key' ]] || false
 }
 
 @test "import-create-tables: try to create a table with a bad csv" {
@@ -392,6 +394,7 @@ DELIM
 }
 
 @test "import-create-tables: dolt diff on a newly created table" {
+    skip_nbf_dolt_1
     dolt sql <<SQL
 CREATE TABLE test (
   pk BIGINT NOT NULL,
@@ -536,6 +539,7 @@ DELIM
 }
 
 @test "import-create-tables: table import -c infers types from data" {
+    skip_nbf_dolt_1
     cat <<DELIM > types.csv
 pk,str,int,bool,float, date, time, datetime
 0,abc,123,false,3.14,2020-02-02,12:12:12.12,2020-02-02 12:12:12
@@ -548,7 +552,7 @@ DELIM
     [[ "$output" =~ "\`pk\` int" ]]
     [[ "$output" =~ "\`str\` varchar(16383)" ]]
     [[ "$output" =~ "\`int\` int unsigned" ]]
-    [[ "$output" =~ "\`bool\` bit(1)" ]]
+    [[ "$output" =~ "\`bool\` tinyint" ]]
     [[ "$output" =~ "\`float\` float" ]]
     [[ "$output" =~ "\`date\` date" ]]
     [[ "$output" =~ "\`time\` time" ]]
@@ -556,6 +560,7 @@ DELIM
 }
 
 @test "import-create-tables: table import -c collects garbage" {
+    skip_nbf_dolt_1
     echo "pk" > pk.csv
     seq 0 100000 >> pk.csv
 
@@ -698,7 +703,7 @@ DELIM
 
     run dolt table import -s schema.sql -c keyless data.csv
     [ "$status" -eq 0 ]
-    [[ "$output" =~ "Rows Processed: 1, Additions: 0, Modifications: 1, Had No Effect: 0" ]] || false
+    [[ "$output" =~ "Rows Processed: 1, Additions: 1, Modifications: 0, Had No Effect: 0" ]] || false
     [[ "$output" =~ "Import completed successfully." ]] || false
 
     run dolt sql -r csv -q "select * from keyless"

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dolthub/go-mysql-server/sql"
+	"gopkg.in/src-d/go-errors.v1"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
@@ -62,8 +63,9 @@ func ProceduresTableSchema() schema.Schema {
 	return schema.MustSchemaFromCols(colColl)
 }
 
-// DoltProceduresGetTable returns the `dolt_procedures` table from the given db, creating it if it does not already exist.
-func DoltProceduresGetTable(ctx *sql.Context, db Database) (*WritableDoltTable, error) {
+// DoltProceduresGetOrCreateTable returns the `dolt_procedures` table from the given db, creating it in the db's
+// current root if it doesn't exist
+func DoltProceduresGetOrCreateTable(ctx *sql.Context, db Database) (*WritableDoltTable, error) {
 	root, err := db.GetRoot(ctx)
 	if err != nil {
 		return nil, err
@@ -95,10 +97,102 @@ func DoltProceduresGetTable(ctx *sql.Context, db Database) (*WritableDoltTable, 
 	return tbl.(*WritableDoltTable), nil
 }
 
+// DoltProceduresGetTable returns the `dolt_procedures` table from the given db, or nil if the table doesn't exist
+func DoltProceduresGetTable(ctx *sql.Context, db Database) (*WritableDoltTable, error) {
+	root, err := db.GetRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tbl, found, err := db.GetTableInsensitiveWithRoot(ctx, root, doltdb.ProceduresTableName)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return tbl.(*WritableDoltTable), nil
+	} else {
+		return nil, nil
+	}
+}
+
+func DoltProceduresGetAll(ctx *sql.Context, db Database) ([]sql.StoredProcedureDetails, error) {
+	tbl, err := DoltProceduresGetTable(ctx, db)
+	if err != nil {
+		return nil, err
+	} else if tbl == nil {
+		return nil, nil
+	}
+
+	indexes, err := tbl.GetIndexes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(indexes) == 0 {
+		return nil, fmt.Errorf("missing index for stored procedures")
+	}
+	idx := indexes[0]
+
+	if len(idx.Expressions()) == 0 {
+		return nil, fmt.Errorf("missing index expression for stored procedures")
+	}
+	nameExpr := idx.Expressions()[0]
+
+	lookup, err := sql.NewIndexBuilder(ctx, idx).IsNotNull(ctx, nameExpr).Build(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	dt, err := tbl.doltTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	iter, err := index.RowIterForIndexLookup(ctx, dt, lookup, tbl.sqlSch, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := iter.Close(ctx); cerr != nil {
+			err = cerr
+		}
+	}()
+
+	var sqlRow sql.Row
+	var details []sql.StoredProcedureDetails
+	missingValue := errors.NewKind("missing `%s` value for procedure row: (%s)")
+
+	for {
+		sqlRow, err = iter.Next(ctx)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		var d sql.StoredProcedureDetails
+		var ok bool
+
+		if d.Name, ok = sqlRow[0].(string); !ok {
+			return nil, missingValue.New(doltdb.ProceduresTableNameCol, sqlRow)
+		}
+		if d.CreateStatement, ok = sqlRow[1].(string); !ok {
+			return nil, missingValue.New(doltdb.ProceduresTableCreateStmtCol, sqlRow)
+		}
+		if d.CreatedAt, ok = sqlRow[2].(time.Time); !ok {
+			return nil, missingValue.New(doltdb.ProceduresTableCreatedAtCol, sqlRow)
+		}
+		if d.ModifiedAt, ok = sqlRow[3].(time.Time); !ok {
+			return nil, missingValue.New(doltdb.ProceduresTableModifiedAtCol, sqlRow)
+		}
+		details = append(details, d)
+	}
+	return details, nil
+}
+
 // DoltProceduresAddProcedure adds the stored procedure to the `dolt_procedures` table in the given db, creating it if
 // it does not exist.
 func DoltProceduresAddProcedure(ctx *sql.Context, db Database, spd sql.StoredProcedureDetails) (retErr error) {
-	tbl, err := DoltProceduresGetTable(ctx, db)
+	tbl, err := DoltProceduresGetOrCreateTable(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -124,13 +218,17 @@ func DoltProceduresAddProcedure(ctx *sql.Context, db Database, spd sql.StoredPro
 	})
 }
 
-// DoltProceduresDropProcedure removes the stored procedure from the `dolt_procedures` table.
+// DoltProceduresDropProcedure removes the stored procedure from the `dolt_procedures` table. The procedure named must
+// exist.
 func DoltProceduresDropProcedure(ctx *sql.Context, db Database, name string) (retErr error) {
 	strings.ToLower(name)
 	tbl, err := DoltProceduresGetTable(ctx, db)
 	if err != nil {
 		return err
+	} else if tbl == nil {
+		return sql.ErrStoredProcedureDoesNotExist.New(name)
 	}
+
 	_, ok, err := DoltProceduresGetDetails(ctx, tbl, name)
 	if err != nil {
 		return err
@@ -172,7 +270,12 @@ func DoltProceduresGetDetails(ctx *sql.Context, tbl *WritableDoltTable, name str
 		return sql.StoredProcedureDetails{}, false, err
 	}
 
-	rowIter, err := index.RowIterForIndexLookup(ctx, indexLookup, nil)
+	dt, err := tbl.doltTable(ctx)
+	if err != nil {
+		return sql.StoredProcedureDetails{}, false, err
+	}
+
+	rowIter, err := index.RowIterForIndexLookup(ctx, dt, indexLookup, tbl.sqlSch, nil)
 	if err != nil {
 		return sql.StoredProcedureDetails{}, false, err
 	}

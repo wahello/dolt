@@ -187,7 +187,7 @@ func (q Query) CommandString() string { return fmt.Sprintf("query %s", q.Query) 
 func (q Query) Exec(t *testing.T, dEnv *env.DoltEnv) error {
 	root, err := dEnv.WorkingRoot(context.Background())
 	require.NoError(t, err)
-	opts := editor.Options{Deaf: dEnv.DbEaFactory()}
+	opts := editor.Options{Deaf: dEnv.DbEaFactory(), Tempdir: dEnv.TempTableFilesDir()}
 	sqlDb := dsqle.NewDatabase("dolt", dEnv.DbData(), opts)
 	engine, sqlCtx, err := dsqle.NewTestEngine(t, dEnv, context.Background(), sqlDb, root)
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func (m Merge) Exec(t *testing.T, dEnv *env.DoltEnv) error {
 			return errhand.VerboseErrorFromError(err)
 		}
 
-		rv, err := cm2.GetRootValue()
+		rv, err := cm2.GetRootValue(context.Background())
 		assert.NoError(t, err)
 
 		err = dEnv.UpdateWorkingSet(context.Background(), workingSet.WithWorkingRoot(rv))
@@ -303,7 +303,7 @@ func (m Merge) Exec(t *testing.T, dEnv *env.DoltEnv) error {
 		assert.NoError(t, err)
 
 	} else {
-		opts := editor.Options{Deaf: dEnv.DbEaFactory()}
+		opts := editor.Options{Deaf: dEnv.DbEaFactory(), Tempdir: dEnv.TempTableFilesDir()}
 		mergedRoot, tblToStats, err := merge.MergeCommits(context.Background(), cm1, cm2, opts)
 		require.NoError(t, err)
 		for _, stats := range tblToStats {

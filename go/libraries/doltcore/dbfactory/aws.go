@@ -138,7 +138,8 @@ func (fact AWSFactory) newChunkStore(ctx context.Context, nbf *types.NomsBinForm
 	}
 
 	sess := session.Must(session.NewSessionWithOptions(opts))
-	return nbs.NewAWSStore(ctx, nbf.VersionString(), parts[0], dbName, parts[1], s3.New(sess), dynamodb.New(sess), defaultMemTableSize)
+	q := nbs.NewUnlimitedMemQuotaProvider()
+	return nbs.NewAWSStore(ctx, nbf.VersionString(), parts[0], dbName, parts[1], s3.New(sess), dynamodb.New(sess), defaultMemTableSize, q)
 }
 
 func validatePath(path string) (string, error) {
@@ -152,9 +153,7 @@ func validatePath(path string) (string, error) {
 		pathLen--
 	}
 
-	// Should probably have regex validation of a valid database name here once we decide what valid database names look
-	// like.
-	if len(path) == 0 || strings.Index(path, "/") != -1 {
+	if len(path) == 0 {
 		return "", errors.New("invalid database name")
 	}
 

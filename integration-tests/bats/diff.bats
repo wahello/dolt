@@ -3,6 +3,7 @@ load $BATS_TEST_DIRNAME/helper/common.bash
 
 setup() {
     setup_common
+    skip_nbf_dolt_1
 
     dolt sql <<SQL
 CREATE TABLE test (
@@ -625,6 +626,29 @@ SQL
     run dolt diff -r sql
     [ $status -eq 0 ]
     [ "${lines[0]}" = 'ALTER TABLE `t` RENAME COLUMN `pk` TO `pk`;' ]
+}
+
+@test "diff: created and dropped tables include schema and data changes in results" {
+  dolt sql -q "create table a(pk int primary key)"
+  dolt commit -am "creating table a"
+  dolt sql -q "insert into a values (1), (2)"
+  dolt commit -am "inserting data into table a"
+  dolt sql -q "drop table a"
+  dolt commit -am "dropping table a"
+
+  run dolt diff HEAD~3 HEAD~2
+  [[ $output =~ 'added table' ]] || false
+  [[ $output =~ '+CREATE TABLE `a` (' ]] || false
+
+  run dolt diff HEAD~3 HEAD~1
+  [[ $output =~ 'added table' ]] || false
+  [[ $output =~ '+CREATE TABLE `a` (' ]] || false
+  [[ $output =~ "+  | 1 " ]] || false
+
+  run dolt diff HEAD~1 HEAD
+  [[ $output =~ 'deleted table' ]] || false
+  [[ $output =~ '-CREATE TABLE `a` (' ]] || false
+  [[ $output =~ "-  | 1 " ]] || false
 }
 
 @test "diff: large diff does not drop rows" {

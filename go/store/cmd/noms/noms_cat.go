@@ -32,6 +32,7 @@ import (
 	"github.com/dolthub/dolt/go/store/chunks"
 	"github.com/dolthub/dolt/go/store/cmd/noms/util"
 	"github.com/dolthub/dolt/go/store/d"
+	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/spec"
 	"github.com/dolthub/dolt/go/store/types"
 )
@@ -55,6 +56,7 @@ var (
 	catRaw        = false
 	catDecomp     = false
 	catNoShow     = false
+	catNoRefs     = false
 	catHashesOnly = false
 )
 
@@ -71,6 +73,7 @@ func setupCatFlags() *flag.FlagSet {
 	catFlagSet := flag.NewFlagSet("cat", flag.ExitOnError)
 	catFlagSet.BoolVar(&catRaw, "raw", false, "If true, includes the raw binary version of each chunk in the nbs file")
 	catFlagSet.BoolVar(&catNoShow, "no-show", false, "If true, skips printing of the value")
+	catFlagSet.BoolVar(&catNoRefs, "no-refs", false, "If true, skips printing of the refs")
 	catFlagSet.BoolVar(&catHashesOnly, "hashes-only", false, "If true, only prints the b32 hashes")
 	catFlagSet.BoolVar(&catDecomp, "decompressed", false, "If true, includes the decompressed binary version of each chunk in the nbs file")
 	return catFlagSet
@@ -158,6 +161,7 @@ func runCat(ctx context.Context, args []string) int {
 		//Want a clean db every loop
 		sp, _ := spec.ForDatabase("mem")
 		vrw := sp.GetVRW(ctx)
+		waf := types.WalkAddrsForNBF(vrw.Format())
 
 		fmt.Printf("        chunk[%d].raw.len:     %d\n", cidx, len(currCD.compressed))
 
@@ -188,17 +192,19 @@ func runCat(ctx context.Context, args []string) int {
 			fmt.Println()
 		}
 
-		refIdx := 0
-		err = types.WalkRefs(chunk, vrw.Format(), func(ref types.Ref) error {
-			if refIdx == 0 {
-				fmt.Printf("    chunk[%d] references chunks:\n", cidx)
-			}
+		if !catNoRefs {
+			refIdx := 0
+			err = waf(chunk, func(addr hash.Hash, _ bool) error {
+				if refIdx == 0 {
+					fmt.Printf("    chunk[%d] references chunks:\n", cidx)
+				}
 
-			fmt.Printf("        Ref Hash: %s\n", ref.TargetHash().String())
-			refIdx++
+				fmt.Printf("        Ref Hash: %s\n", addr.String())
+				refIdx++
 
-			return nil
-		})
+				return nil
+			})
+		}
 
 		d.PanicIfError(err)
 		fmt.Println()

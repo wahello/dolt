@@ -51,8 +51,14 @@ assert_feature_version() {
     # Tests that don't end in a valid dolt dir will fail the above
     # command, don't check its output in that case
     if [ "$status" -eq 0 ]; then
-        [[ "$output" =~ "feature version: 2" ]] || exit 1
+        [[ "$output" =~ "feature version: 3" ]] || exit 1
     fi
+}
+
+skip_nbf_dolt_1() {
+  if [ "$DOLT_DEFAULT_BIN_FORMAT" = "__DOLT_1__" ]; then
+    skip "skipping test for nomsBinFormat __DOLT_1__"
+  fi
 }
 
 setup_common() {

@@ -302,7 +302,7 @@ func (sp Spec) NewChunkStore(ctx context.Context) chunks.ChunkStore {
 	case "gs":
 		return parseGCSSpec(ctx, sp.Href(), sp.Options)
 	case "nbs":
-		cs, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), sp.DatabaseName, 1<<28)
+		cs, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), sp.DatabaseName, 1<<28, nbs.NewUnlimitedMemQuotaProvider())
 		d.PanicIfError(err)
 		return cs
 	case "mem":
@@ -352,7 +352,7 @@ func parseAWSSpec(ctx context.Context, awsURL string, options SpecOptions) chunk
 	}
 
 	sess := session.Must(session.NewSession(awsConfig))
-	cs, err := nbs.NewAWSStore(ctx, types.Format_Default.VersionString(), parts[0], u.Path, parts[1], s3.New(sess), dynamodb.New(sess), 1<<28)
+	cs, err := nbs.NewAWSStore(ctx, types.Format_Default.VersionString(), parts[0], u.Path, parts[1], s3.New(sess), dynamodb.New(sess), 1<<28, nbs.NewUnlimitedMemQuotaProvider())
 
 	d.PanicIfError(err)
 
@@ -374,7 +374,7 @@ func parseGCSSpec(ctx context.Context, gcsURL string, options SpecOptions) chunk
 		panic("Could not create GCSBlobstore")
 	}
 
-	cs, err := nbs.NewGCSStore(ctx, types.Format_Default.VersionString(), bucket, path, gcs, 1<<28)
+	cs, err := nbs.NewGCSStore(ctx, types.Format_Default.VersionString(), bucket, path, gcs, 1<<28, nbs.NewUnlimitedMemQuotaProvider())
 
 	d.PanicIfError(err)
 
@@ -396,9 +396,12 @@ func (sp Spec) GetDataset(ctx context.Context) (ds datas.Dataset) {
 
 // GetValue returns the Value at this Spec's Path within its Database, or nil
 // if this isn't a Path Spec or if that path isn't found.
-func (sp Spec) GetValue(ctx context.Context) (val types.Value) {
+func (sp Spec) GetValue(ctx context.Context) (val types.Value, err error) {
 	if !sp.Path.IsEmpty() {
-		val = sp.Path.Resolve(ctx, sp.GetDatabase(ctx), sp.GetVRW(ctx))
+		val, err = sp.Path.Resolve(ctx, sp.GetDatabase(ctx), sp.GetVRW(ctx))
+		if err != nil {
+			return nil, err
+		}
 	}
 	return
 }
@@ -486,10 +489,10 @@ func (sp Spec) createDatabase(ctx context.Context) (datas.Database, types.ValueR
 			return getStandardLocalStore(ctx, sp.DatabaseName)
 		}
 
-		newGenSt, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), sp.DatabaseName, 1<<28)
+		newGenSt, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), sp.DatabaseName, 1<<28, nbs.NewUnlimitedMemQuotaProvider())
 		d.PanicIfError(err)
 
-		oldGenSt, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), oldgenDb, 1<<28)
+		oldGenSt, err := nbs.NewLocalStore(ctx, newGenSt.Version(), oldgenDb, 1<<28, nbs.NewUnlimitedMemQuotaProvider())
 		d.PanicIfError(err)
 
 		cs := nbs.NewGenerationalCS(oldGenSt, newGenSt)
@@ -516,7 +519,7 @@ func (sp Spec) createDatabase(ctx context.Context) (datas.Database, types.ValueR
 func getStandardLocalStore(ctx context.Context, dbName string) (datas.Database, types.ValueReadWriter) {
 	os.Mkdir(dbName, 0777)
 
-	cs, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), dbName, 1<<28)
+	cs, err := nbs.NewLocalStore(ctx, types.Format_Default.VersionString(), dbName, 1<<28, nbs.NewUnlimitedMemQuotaProvider())
 	d.PanicIfError(err)
 
 	vrw := types.NewValueStore(cs)

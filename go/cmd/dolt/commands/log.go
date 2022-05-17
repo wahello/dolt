@@ -29,6 +29,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions/commitwalk"
 	"github.com/dolthub/dolt/go/libraries/utils/argparser"
+	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/util/outputpager"
 )
@@ -51,7 +52,7 @@ type logOpts struct {
 }
 
 type logNode struct {
-	commitMeta   *doltdb.CommitMeta
+	commitMeta   *datas.CommitMeta
 	commitHash   hash.Hash
 	parentHashes []hash.Hash
 	branchNames  []string
@@ -241,7 +242,7 @@ func logCommits(ctx context.Context, dEnv *env.DoltEnv, cs *doltdb.CommitSpec, o
 
 	var commitsInfo []logNode
 	for _, comm := range commits {
-		meta, mErr := comm.GetCommitMeta()
+		meta, mErr := comm.GetCommitMeta(ctx)
 		if mErr != nil {
 			cli.PrintErrln("error: failed to get commit metadata")
 			return 1
@@ -273,7 +274,7 @@ func logCommits(ctx context.Context, dEnv *env.DoltEnv, cs *doltdb.CommitSpec, o
 }
 
 func tableExists(ctx context.Context, commit *doltdb.Commit, tableName string) (bool, error) {
-	rv, err := commit.GetRootValue()
+	rv, err := commit.GetRootValue(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -336,12 +337,12 @@ func logTableCommits(ctx context.Context, dEnv *env.DoltEnv, opts logOpts, cs *d
 			continue
 		}
 
-		parentRV, err := c.GetRootValue()
+		parentRV, err := c.GetRootValue(ctx)
 		if err != nil {
 			return err
 		}
 
-		childRV, err := prevCommit.GetRootValue()
+		childRV, err := prevCommit.GetRootValue(ctx)
 		if err != nil {
 			return err
 		}
@@ -352,7 +353,7 @@ func logTableCommits(ctx context.Context, dEnv *env.DoltEnv, opts logOpts, cs *d
 		}
 
 		if ok {
-			meta, err := prevCommit.GetCommitMeta()
+			meta, err := prevCommit.GetCommitMeta(ctx)
 			if err != nil {
 				return err
 			}

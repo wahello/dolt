@@ -22,6 +22,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/diff"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
+	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/hash"
 )
 
@@ -42,7 +43,7 @@ func CommitStaged(ctx context.Context, roots doltdb.Roots, mergeActive bool, mer
 	drw := dbData.Drw
 
 	if props.Message == "" {
-		return nil, doltdb.ErrEmptyCommitMessage
+		return nil, datas.ErrEmptyCommitMessage
 	}
 
 	staged, notStaged, err := diff.GetStagedUnstagedTableDeltas(ctx, roots)
@@ -117,17 +118,18 @@ func CommitStaged(ctx context.Context, roots doltdb.Roots, mergeActive bool, mer
 		return nil, err
 	}
 
-	meta, err := doltdb.NewCommitMetaWithUserTS(props.Name, props.Email, props.Message, props.Date)
+	meta, err := datas.NewCommitMetaWithUserTS(props.Name, props.Email, props.Message, props.Date)
 	if err != nil {
 		return nil, err
 	}
 
 	// TODO: this is only necessary in some contexts (SQL). Come up with a more coherent set of interfaces to
 	//  rationalize where the root value writes happen before a commit is created.
-	h, err := ddb.WriteRootValue(ctx, stagedRoot)
+	r, h, err := ddb.WriteRootValue(ctx, stagedRoot)
 	if err != nil {
 		return nil, err
 	}
+	stagedRoot = r
 
 	// logrus.Errorf("staged root is %s", stagedRoot.DebugString(ctx, true))
 
@@ -155,7 +157,7 @@ func GetCommitStaged(
 	drw := dbData.Drw
 
 	if props.Message == "" {
-		return nil, doltdb.ErrEmptyCommitMessage
+		return nil, datas.ErrEmptyCommitMessage
 	}
 
 	staged, notStaged, err := diff.GetStagedUnstagedTableDeltas(ctx, roots)
@@ -220,7 +222,7 @@ func GetCommitStaged(
 		return nil, err
 	}
 
-	meta, err := doltdb.NewCommitMetaWithUserTS(props.Name, props.Email, props.Message, props.Date)
+	meta, err := datas.NewCommitMetaWithUserTS(props.Name, props.Email, props.Message, props.Date)
 	if err != nil {
 		return nil, err
 	}
@@ -246,19 +248,19 @@ func TimeSortedCommits(ctx context.Context, ddb *doltdb.DoltDB, commit *doltdb.C
 	}
 
 	var sortErr error
-	var metaI, metaJ *doltdb.CommitMeta
+	var metaI, metaJ *datas.CommitMeta
 	sort.Slice(uniqueCommits, func(i, j int) bool {
 		if sortErr != nil {
 			return false
 		}
 
-		metaI, sortErr = uniqueCommits[i].GetCommitMeta()
+		metaI, sortErr = uniqueCommits[i].GetCommitMeta(ctx)
 
 		if sortErr != nil {
 			return false
 		}
 
-		metaJ, sortErr = uniqueCommits[j].GetCommitMeta()
+		metaJ, sortErr = uniqueCommits[j].GetCommitMeta(ctx)
 
 		if sortErr != nil {
 			return false

@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	DefaultBranchKey         = "dolt_default_branch"
 	ReplicateToRemoteKey     = "dolt_replicate_to_remote"
 	ReadReplicaRemoteKey     = "dolt_read_replica_remote"
 	SkipReplicationErrorsKey = "dolt_skip_replication_errors"
@@ -39,14 +38,6 @@ func init() {
 
 func AddDoltSystemVariables() {
 	sql.SystemVariables.AddSystemVariables([]sql.SystemVariable{
-		{
-			Name:              DefaultBranchKey,
-			Scope:             sql.SystemVariableScope_Global,
-			Dynamic:           true,
-			SetVarHintApplies: false,
-			Type:              sql.NewSystemStringType(DefaultBranchKey),
-			Default:           "",
-		},
 		{
 			Name:              ReplicateToRemoteKey,
 			Scope:             sql.SystemVariableScope_Global,
@@ -73,7 +64,7 @@ func AddDoltSystemVariables() {
 		},
 		{
 			Name:              ReplicateHeadsKey,
-			Scope:             sql.SystemVariableScope_Session,
+			Scope:             sql.SystemVariableScope_Both,
 			Dynamic:           true,
 			SetVarHintApplies: false,
 			Type:              sql.NewSystemStringType(ReplicateHeadsKey),
@@ -81,7 +72,7 @@ func AddDoltSystemVariables() {
 		},
 		{
 			Name:              ReplicateAllHeadsKey,
-			Scope:             sql.SystemVariableScope_Session,
+			Scope:             sql.SystemVariableScope_Both,
 			Dynamic:           true,
 			SetVarHintApplies: false,
 			Type:              sql.NewSystemBoolType(ReplicateAllHeadsKey),

@@ -40,6 +40,7 @@ teardown() {
 }
 
 @test "sql: errors do not write incomplete rows" {
+    skip_nbf_dolt_1
     dolt sql <<"SQL"
 CREATE TABLE test (
     pk BIGINT PRIMARY KEY,
@@ -868,6 +869,7 @@ SQL
 }
 
 @test "sql: alter table to add and delete a column" {
+    skip_nbf_dolt_1
     run dolt sql -q "alter table one_pk add (c6 int)"
     [ $status -eq 0 ]
     run dolt sql -q "describe one_pk"
@@ -885,6 +887,7 @@ SQL
 }
 
 @test "sql: alter table to rename a column" {
+    skip_nbf_dolt_1
     dolt sql -q "alter table one_pk add (c6 int)"
     run dolt sql -q "alter table one_pk rename column c6 to c7"
     [ $status -eq 0 ]
@@ -895,6 +898,7 @@ SQL
 }
 
 @test "sql: alter table change column to rename a column" {
+    skip_nbf_dolt_1
     dolt sql -q "alter table one_pk add (c6 int)"
     dolt sql -q "alter table one_pk change column c6 c7 int"
     run dolt sql -q "describe one_pk"
@@ -983,6 +987,7 @@ SQL
 }
 
 @test "sql: alter table modify column type failure" {
+    skip_nbf_dolt_1
     dolt sql <<SQL
 CREATE TABLE t1(pk BIGINT PRIMARY KEY, v1 INT, INDEX(v1));
 CREATE TABLE t2(pk BIGINT PRIMARY KEY, v1 VARCHAR(20), INDEX(v1));
@@ -1000,6 +1005,8 @@ SQL
 }
 
 @test "sql: alter table modify column type no data change" {
+    skip_nbf_dolt_1
+    
     # there was a bug on NULLs where it would register a change
     dolt sql <<SQL
 CREATE TABLE t1(pk BIGINT PRIMARY KEY, v1 VARCHAR(64), INDEX(v1));
@@ -1404,50 +1411,50 @@ CREATE PROCEDURE p2() SELECT 6*6;
 SQL
     # We're excluding timestamps in these statements
     # Initial look
-    run dolt sql -q "SELECT * FROM dolt_procedures" -r=csv
+    run dolt sql -b -q "SET @@show_external_procedures = 0;SELECT * FROM dolt_procedures" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "name,create_stmt,created_at,modified_at" ]] || false
     [[ "$output" =~ 'p1,CREATE PROCEDURE p1() SELECT 5*5' ]] || false
     [[ "$output" =~ 'p2,CREATE PROCEDURE p2() SELECT 6*6' ]] || false
-    [[ "${#lines[@]}" = "3" ]] || false
-    run dolt sql -q "SHOW PROCEDURE STATUS" -r=csv
+    [[ "${#lines[@]}" = "4" ]] || false
+    run dolt sql -b -q "SET @@show_external_procedures = 0;SHOW PROCEDURE STATUS" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "Db,Name,Type,Definer,Modified,Created,Security_type,Comment,character_set_client,collation_connection,Database Collation" ]] || false
     [[ "$output" =~ ',p1,PROCEDURE,' ]] || false
     [[ "$output" =~ ',p2,PROCEDURE,' ]] || false
-    [[ "${#lines[@]}" = "3" ]] || false
+    [[ "${#lines[@]}" = "4" ]] || false
     # Drop p2
     dolt sql -q "DROP PROCEDURE p2"
-    run dolt sql -q "SELECT * FROM dolt_procedures" -r=csv
+    run dolt sql -b -q "SET @@show_external_procedures = 0;SELECT * FROM dolt_procedures" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "name,create_stmt,created_at,modified_at" ]] || false
     [[ "$output" =~ 'p1,CREATE PROCEDURE p1() SELECT 5*5' ]] || false
     [[ ! "$output" =~ 'p2,CREATE PROCEDURE p2() SELECT 6*6' ]] || false
-    [[ "${#lines[@]}" = "2" ]] || false
-    run dolt sql -q "SHOW PROCEDURE STATUS" -r=csv
+    [[ "${#lines[@]}" = "3" ]] || false
+    run dolt sql -b -q "SET @@show_external_procedures = 0;SHOW PROCEDURE STATUS" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "Db,Name,Type,Definer,Modified,Created,Security_type,Comment,character_set_client,collation_connection,Database Collation" ]] || false
     [[ "$output" =~ ',p1,PROCEDURE,' ]] || false
     [[ ! "$output" =~ ',p2,PROCEDURE,' ]] || false
-    [[ "${#lines[@]}" = "2" ]] || false
+    [[ "${#lines[@]}" = "3" ]] || false
     # Drop p2 again and error
     run dolt sql -q "DROP PROCEDURE p2"
     [ "$status" -eq "1" ]
     [[ "$output" =~ '"p2" does not exist' ]] || false
     # Drop p1 using if exists
     dolt sql -q "DROP PROCEDURE IF EXISTS p1"
-    run dolt sql -q "SELECT * FROM dolt_procedures" -r=csv
+    run dolt sql -b -q "SET @@show_external_procedures = 0;SELECT * FROM dolt_procedures" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "name,create_stmt,created_at,modified_at" ]] || false
     [[ ! "$output" =~ 'p1,CREATE PROCEDURE p1() SELECT 5*5' ]] || false
     [[ ! "$output" =~ 'p2,CREATE PROCEDURE p2() SELECT 6*6' ]] || false
-    [[ "${#lines[@]}" = "1" ]] || false
-    run dolt sql -q "SHOW PROCEDURE STATUS" -r=csv
+    [[ "${#lines[@]}" = "2" ]] || false
+    run dolt sql -b -q "SET @@show_external_procedures = 0;SHOW PROCEDURE STATUS" -r=csv
     [ "$status" -eq "0" ]
     [[ "$output" =~ "Db,Name,Type,Definer,Modified,Created,Security_type,Comment,character_set_client,collation_connection,Database Collation" ]] || false
     [[ ! "$output" =~ ',p1,PROCEDURE,' ]] || false
     [[ ! "$output" =~ ',p2,PROCEDURE,' ]] || false
-    [[ "${#lines[@]}" = "1" ]] || false
+    [[ "${#lines[@]}" = "2" ]] || false
 }
 
 @test "sql: active_branch() func" {
@@ -1517,6 +1524,7 @@ SQL
 }
 
 @test "sql: dolt diff table correctly works with IN" {
+    skip_nbf_dolt_1
     dolt sql -q "CREATE TABLE mytable(pk int primary key);"
     dolt sql -q "INSERT INTO mytable VALUES (1), (2)"
     dolt commit -am "Commit 1"
@@ -1635,12 +1643,13 @@ get_head_commit() {
 @test "sql: sql -q query vertical format check" {
     run dolt sql -r vertical -q "show tables"
     [ "$status" -eq 0 ]
-    [ "$output" = "*************************** 1. row ***************************
-Table: has_datetimes
-*************************** 2. row ***************************
-Table: one_pk
-*************************** 3. row ***************************
-Table: two_pk" ]
+    [[ "$output" =~ "*************************** 1. row ***************************" ]] || false
+    [[ "$output" =~ "Tables_in_dolt_repo" ]] || false
+    [[ "$output" =~ ": has_datetimes" ]] || false
+    [[ "$output" =~ "*************************** 2. row ***************************" ]] || false
+    [[ "$output" =~ ": one_pk" ]] || false
+    [[ "$output" =~ "*************************** 3. row ***************************" ]] || false
+    [[ "$output" =~ ": two_pk" ]] || false
 
     dolt sql <<SQL
 INSERT INTO one_pk (pk,c1,c2,c3,c4,c5) VALUES (4,40,40,40,40,40),(5,50,50,50,50,50),(6,60,60,60,60,60),(7,70,70,70,70,70);

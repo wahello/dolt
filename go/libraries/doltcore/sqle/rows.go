@@ -75,6 +75,10 @@ func newRowIterator(ctx context.Context, tbl *doltdb.Table, projCols []string, p
 		return nil, err
 	}
 
+	if types.IsFormat_DOLT_1(tbl.Format()) {
+		return ProllyRowIterFromPartition(ctx, tbl, projCols, partition)
+	}
+
 	if schema.IsKeyless(sch) {
 		// would be more optimal to project columns into keyless tables also
 		return newKeylessRowIterator(ctx, tbl, projCols, partition)
@@ -115,10 +119,6 @@ func newKeylessRowIterator(ctx context.Context, tbl *doltdb.Table, projectedCols
 }
 
 func newKeyedRowIter(ctx context.Context, tbl *doltdb.Table, projectedCols []string, partition doltTablePartition) (sql.RowIter, error) {
-	if types.IsFormat_DOLT_1(tbl.Format()) {
-		return ProllyRowIterFromPartition(ctx, tbl, projectedCols, partition)
-	}
-
 	mapIter, err := iterForPartition(ctx, partition)
 	if err != nil {
 		return nil, err
@@ -174,20 +174,40 @@ func ProllyRowIterFromPartition(ctx context.Context, tbl *doltdb.Table, projecti
 	if err != nil {
 		return nil, err
 	}
-	return index.NewProllyRowIter(ctx, sch, rows, partition.rowRange, projections)
+	if partition.end > uint64(rows.Count()) {
+		partition.end = uint64(rows.Count())
+	}
+
+	iter, err := rows.IterOrdinalRange(ctx, partition.start, partition.end)
+	if err != nil {
+		return nil, err
+	}
+
+	return index.NewProllyRowIter(ctx, sch, rows, iter, projections)
 }
 
-// Returns a |sql.RowIter| for a full table scan for the given |table|. If
+// TableToRowIter returns a |sql.RowIter| for a full table scan for the given |table|. If
 // |columns| is not empty, only columns with names appearing in |columns| will
 // have non-|nil| values in the resulting |sql.Row|s. If |columns| is empty,
 // values for all columns in the table are populated in each returned Row. The
 // returned rows always have the schema of the table, regardless of the value
 // of |columns|.  Providing a column name which does not appear in the schema
 // is not an error, but no corresponding column will appear in the results.
-func TableToRowIter(ctx context.Context, table *doltdb.Table, columns []string) (sql.RowIter, error) {
-	data, err := table.GetRowData(ctx)
+func TableToRowIter(ctx *sql.Context, table *WritableDoltTable, columns []string) (sql.RowIter, error) {
+	t, err := table.doltTable(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return newRowIterator(ctx, table, columns, doltTablePartition{rowData: data, end: NoUpperBound})
+
+	data, err := t.GetRowData(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	p := doltTablePartition{
+		end:     NoUpperBound,
+		rowData: data,
+	}
+
+	return newRowIterator(ctx, t, columns, p)
 }

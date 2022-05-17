@@ -33,6 +33,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema/typeinfo"
 	"github.com/dolthub/dolt/go/libraries/doltcore/table/untyped"
+	"github.com/dolthub/dolt/go/store/datas"
 	"github.com/dolthub/dolt/go/store/types"
 )
 
@@ -92,10 +93,10 @@ func createPeopleTestSchema() schema.Schema {
 		schema.NewColumn("id", IdTag, types.IntKind, true, schema.NotNullConstraint{}),
 		schema.NewColumn("first_name", FirstNameTag, types.StringKind, false, schema.NotNullConstraint{}),
 		schema.NewColumn("last_name", LastNameTag, types.StringKind, false, schema.NotNullConstraint{}),
-		schema.NewColumn("is_married", IsMarriedTag, types.BoolKind, false),
+		schema.NewColumn("is_married", IsMarriedTag, types.IntKind, false),
 		schema.NewColumn("age", AgeTag, types.IntKind, false),
 		schema.NewColumn("rating", RatingTag, types.FloatKind, false),
-		schema.NewColumn("uuid", UuidTag, types.UUIDKind, false),
+		schema.NewColumn("uuid", UuidTag, types.StringKind, false),
 		schema.NewColumn("num_episodes", NumEpisodesTag, types.UintKind, false),
 	)
 	return schema.MustSchemaFromCols(colColl)
@@ -129,11 +130,16 @@ func newColumnWithTypeInfo(name string, tag uint64, info typeinfo.TypeInfo, part
 }
 
 func NewPeopleRow(id int, first, last string, isMarried bool, age int, rating float64) row.Row {
+	isMarriedVal := types.Int(0)
+	if isMarried {
+		isMarriedVal = types.Int(1)
+	}
+
 	vals := row.TaggedValues{
 		IdTag:        types.Int(id),
 		FirstNameTag: types.String(first),
 		LastNameTag:  types.String(last),
-		IsMarriedTag: types.Bool(isMarried),
+		IsMarriedTag: isMarriedVal,
 		AgeTag:       types.Int(age),
 		RatingTag:    types.Float(rating),
 	}
@@ -190,14 +196,19 @@ func newAppsRow2(charId, epId int, comment string) row.Row {
 
 // Most rows don't have these optional fields set, as they aren't needed for basic testing
 func NewPeopleRowWithOptionalFields(id int, first, last string, isMarried bool, age int, rating float64, uid uuid.UUID, numEpisodes uint64) row.Row {
+	isMarriedVal := types.Int(0)
+	if isMarried {
+		isMarriedVal = types.Int(1)
+	}
+
 	vals := row.TaggedValues{
 		IdTag:          types.Int(id),
 		FirstNameTag:   types.String(first),
 		LastNameTag:    types.String(last),
-		IsMarriedTag:   types.Bool(isMarried),
+		IsMarriedTag:   isMarriedVal,
 		AgeTag:         types.Int(age),
 		RatingTag:      types.Float(rating),
-		UuidTag:        types.UUID(uid),
+		UuidTag:        types.String(uid.String()),
 		NumEpisodesTag: types.Uint(numEpisodes),
 	}
 
@@ -294,9 +305,12 @@ func MutateRow(sch schema.Schema, r row.Row, tagsAndVals ...interface{}) row.Row
 			case string:
 				nomsVal = types.String(v)
 			case uuid.UUID:
-				nomsVal = types.UUID(v)
+				nomsVal = types.String(v.String())
 			case bool:
-				nomsVal = types.Bool(v)
+				nomsVal = types.Int(0)
+				if v {
+					nomsVal = types.Int(1)
+				}
 			case time.Time:
 				nomsVal = types.Timestamp(v)
 			default:
@@ -580,14 +594,15 @@ func processNode(t *testing.T, ctx context.Context, dEnv *env.DoltEnv, node Hist
 	cm, err := dEnv.DoltDB.Resolve(ctx, cs, nil)
 	require.NoError(t, err)
 
-	root, err := cm.GetRootValue()
+	root, err := cm.GetRootValue(ctx)
 	require.NoError(t, err)
 
 	root = UpdateTables(t, ctx, root, node.Updates)
-	h, err := dEnv.DoltDB.WriteRootValue(ctx, root)
+	r, h, err := dEnv.DoltDB.WriteRootValue(ctx, root)
 	require.NoError(t, err)
+	root = r
 
-	meta, err := doltdb.NewCommitMeta("Ash Ketchum", "ash@poke.mon", node.CommitMsg)
+	meta, err := datas.NewCommitMeta("Ash Ketchum", "ash@poke.mon", node.CommitMsg)
 	require.NoError(t, err)
 
 	cm, err = dEnv.DoltDB.Commit(ctx, h, branchRef, meta)

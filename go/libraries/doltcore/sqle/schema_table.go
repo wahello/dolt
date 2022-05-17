@@ -17,10 +17,12 @@ package sqle
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema/typeinfo"
@@ -31,6 +33,15 @@ import (
 
 var errDoltSchemasTableFormat = fmt.Errorf("`%s` schema in unexpected format", doltdb.SchemasTableName)
 var noSchemaIndexDefined = fmt.Errorf("could not find index `%s` on system table `%s`", doltdb.SchemasTablesIndexName, doltdb.SchemasTableName)
+
+const (
+	viewFragment    = "view"
+	triggerFragment = "trigger"
+)
+
+type Extra struct {
+	CreatedAt int64
+}
 
 // The fixed dolt schema for the `dolt_schemas` table.
 func SchemasTableSchema() schema.Schema {
@@ -50,7 +61,11 @@ func SchemasTableSchema() schema.Schema {
 	if err != nil {
 		panic(err)
 	}
-	colColl := schema.NewColCollection(typeCol, nameCol, fragmentCol, idCol)
+	extraCol, err := schema.NewColumnWithTypeInfo(doltdb.SchemasTablesExtraCol, schema.DoltSchemasExtraTag, typeinfo.JSONType, false, "", false, "")
+	if err != nil {
+		panic(err)
+	}
+	colColl := schema.NewColCollection(typeCol, nameCol, fragmentCol, idCol, extraCol)
 	return schema.MustSchemaFromCols(colColl)
 }
 
@@ -67,8 +82,8 @@ func GetOrCreateDoltSchemasTable(ctx *sql.Context, db Database) (retTbl *Writabl
 	var rowsToAdd []sql.Row
 	if found {
 		schemasTable := tbl.(*WritableDoltTable)
-		// Old schemas table does not contain the `id` column.
-		if !tbl.Schema().Contains(doltdb.SchemasTablesIdCol, doltdb.SchemasTableName) {
+		// Old schemas table does not contain the `id` or `extra` column.
+		if !tbl.Schema().Contains(doltdb.SchemasTablesIdCol, doltdb.SchemasTableName) || !tbl.Schema().Contains(doltdb.SchemasTablesExtraCol, doltdb.SchemasTableName) {
 			root, rowsToAdd, err = migrateOldSchemasTableToNew(ctx, db, root, schemasTable)
 			if err != nil {
 				return nil, err
@@ -153,7 +168,7 @@ func migrateOldSchemasTableToNew(
 	[]sql.Row,
 	error,
 ) {
-	// Copy all of the old data over and add an index column
+	// Copy all of the old data over and add an index column and an extra column
 	var rowsToAdd []sql.Row
 	table, err := schemasTable.doltTable(ctx)
 	if err != nil {
@@ -174,8 +189,12 @@ func migrateOldSchemasTableToNew(
 		if err != nil {
 			return err
 		}
-		// prepend the new id to each row
-		sqlRow = append(sqlRow, id)
+		// append the new id to row, if missing
+		if !schemasTable.sqlSchema().Contains(doltdb.SchemasTablesIdCol, doltdb.SchemasTableName) {
+			sqlRow = append(sqlRow, id)
+		}
+		// append the extra cols to row
+		sqlRow = append(sqlRow, nil)
 		rowsToAdd = append(rowsToAdd, sqlRow)
 		id++
 		return nil
@@ -200,26 +219,41 @@ func nextSchemasTableIndex(ctx *sql.Context, root *doltdb.RootValue) (int64, err
 		return 0, err
 	}
 
-	rows, err := tbl.GetNomsRowData(ctx)
+	rows, err := tbl.GetRowData(ctx)
 	if err != nil {
 		return 0, err
 	}
 
-	idx := int64(1)
-	if rows.Len() > 0 {
-		keyTpl, _, err := rows.Last(ctx)
+	if rows.Empty() {
+		return 1, nil
+	}
+
+	if types.IsFormat_DOLT_1(tbl.Format()) {
+		p := durable.ProllyMapFromIndex(rows)
+		key, _, err := p.Last(ctx)
 		if err != nil {
 			return 0, err
 		}
-		if keyTpl != nil {
-			key, err := keyTpl.(types.Tuple).Get(1)
-			if err != nil {
-				return 0, err
-			}
-			idx = int64(key.(types.Int)) + 1
+		kd, _ := p.Descriptors()
+
+		i, _ := kd.GetInt64(0, key)
+		return i + 1, nil
+	} else {
+		m := durable.NomsMapFromIndex(rows)
+		keyTpl, _, err := m.Last(ctx)
+		if err != nil {
+			return 0, err
 		}
+		if keyTpl == nil {
+			return 1, nil
+		}
+
+		key, err := keyTpl.(types.Tuple).Get(1)
+		if err != nil {
+			return 0, err
+		}
+		return int64(key.(types.Int)) + 1, nil
 	}
-	return idx, nil
 }
 
 // fragFromSchemasTable returns the row with the given schema fragment if it exists.
@@ -245,7 +279,12 @@ func fragFromSchemasTable(ctx *sql.Context, tbl *WritableDoltTable, fragType str
 		return nil, false, err
 	}
 
-	iter, err := index.RowIterForIndexLookup(ctx, lookup, nil)
+	dt, err := tbl.doltTable(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	iter, err := index.RowIterForIndexLookup(ctx, dt, lookup, tbl.sqlSch, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -256,72 +295,91 @@ func fragFromSchemasTable(ctx *sql.Context, tbl *WritableDoltTable, fragType str
 		}
 	}()
 
-	sqlRow, err := iter.Next(ctx)
-	if err == nil {
+	// todo(andy): use filtered reader?
+	for {
+		sqlRow, err := iter.Next(ctx)
+		if err == io.EOF {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if sqlRow[0] != fragType || sqlRow[1] != name {
+			continue
+		}
 		return sqlRow, true, nil
-	} else if err == io.EOF {
-		return nil, false, nil
-	} else {
-		return nil, false, err
 	}
 }
 
 type schemaFragment struct {
 	name     string
 	fragment string
+	created  time.Time
 }
 
-func getSchemaFragmentsOfType(ctx *sql.Context, tbl *doltdb.Table, fragmentType string) ([]schemaFragment, error) {
-	sch, err := tbl.GetSchema(ctx)
+func getSchemaFragmentsOfType(ctx *sql.Context, tbl *WritableDoltTable, fragType string) ([]schemaFragment, error) {
+	iter, err := TableToRowIter(ctx, tbl, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	typeCol, ok := sch.GetAllCols().GetByName(doltdb.SchemasTablesTypeCol)
-	if !ok {
-		return nil, errDoltSchemasTableFormat
-	}
-	nameCol, ok := sch.GetAllCols().GetByName(doltdb.SchemasTablesNameCol)
-	if !ok {
-		return nil, errDoltSchemasTableFormat
-	}
-	fragCol, ok := sch.GetAllCols().GetByName(doltdb.SchemasTablesFragmentCol)
-	if !ok {
-		return nil, errDoltSchemasTableFormat
-	}
-
-	rowData, err := tbl.GetNomsRowData(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var fragments []schemaFragment
-	err = rowData.Iter(ctx, func(key, val types.Value) (stop bool, err error) {
-		dRow, err := row.FromNoms(sch, key.(types.Tuple), val.(types.Tuple))
+	var frags []schemaFragment
+	for {
+		sqlRow, err := iter.Next(ctx)
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			return true, err
+			return nil, err
 		}
-		if typeColVal, ok := dRow.GetColVal(typeCol.Tag); ok && typeColVal.Equals(types.String(fragmentType)) {
-			name, ok := dRow.GetColVal(nameCol.Tag)
-			if !ok {
-				taggedVals, _ := dRow.TaggedValues()
-				return true, fmt.Errorf("missing `%s` value for view row: (%s)", doltdb.SchemasTablesNameCol, taggedVals)
-			}
-			def, ok := dRow.GetColVal(fragCol.Tag)
-			if !ok {
-				taggedVals, _ := dRow.TaggedValues()
-				return true, fmt.Errorf("missing `%s` value for view row: (%s)", doltdb.SchemasTablesFragmentCol, taggedVals)
-			}
-			fragments = append(fragments, schemaFragment{
-				name:     string(name.(types.String)),
-				fragment: string(def.(types.String)),
+
+		if sqlRow[0] != fragType {
+			continue
+		}
+
+		// For tables that haven't been converted yet or are filled with nil, use 1 as the trigger creation time
+		if len(sqlRow) < 5 || sqlRow[4] == nil {
+			frags = append(frags, schemaFragment{
+				name:     sqlRow[1].(string),
+				fragment: sqlRow[2].(string),
+				created:  time.Unix(1, 0).UTC(), // TablePlus editor thinks 0 is out of range
 			})
+			continue
 		}
-		return false, nil
-	})
+
+		// Extract Created Time from JSON column
+		createdTime, err := getCreatedTime(ctx, sqlRow)
+
+		frags = append(frags, schemaFragment{
+			name:     sqlRow[1].(string),
+			fragment: sqlRow[2].(string),
+			created:  time.Unix(createdTime, 0).UTC(),
+		})
+	}
+	return frags, nil
+}
+
+func getCreatedTime(ctx *sql.Context, row sql.Row) (int64, error) {
+	doc, err := row[4].(sql.JSONValue).Unmarshall(ctx)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	return fragments, nil
+	err = fmt.Errorf("value %v does not contain creation time", doc.Val)
+
+	obj, ok := doc.Val.(map[string]interface{})
+	if !ok {
+		return 0, err
+	}
+
+	v, ok := obj["CreatedAt"]
+	if !ok {
+		return 0, err
+	}
+
+	f, ok := v.(float64)
+	if !ok {
+		return 0, err
+	}
+	return int64(f), nil
 }

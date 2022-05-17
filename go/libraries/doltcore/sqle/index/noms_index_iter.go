@@ -23,6 +23,7 @@ import (
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
+	"github.com/dolthub/dolt/go/libraries/doltcore/table/typed/noms"
 	"github.com/dolthub/dolt/go/libraries/utils/async"
 	"github.com/dolthub/dolt/go/libraries/utils/set"
 	"github.com/dolthub/dolt/go/store/types"
@@ -54,7 +55,7 @@ type indexLookupRowIterAdapter struct {
 }
 
 // NewIndexLookupRowIterAdapter returns a new indexLookupRowIterAdapter.
-func NewIndexLookupRowIterAdapter(ctx *sql.Context, idx DoltIndex, keyIter nomsKeyIter) (*indexLookupRowIterAdapter, error) {
+func NewIndexLookupRowIterAdapter(ctx *sql.Context, idx DoltIndex, tableData durable.Index, keyIter nomsKeyIter) (*indexLookupRowIterAdapter, error) {
 	lookupTags := make(map[uint64]int)
 	for i, tag := range idx.Schema().GetPKCols().Tags {
 		lookupTags[tag] = i
@@ -65,7 +66,7 @@ func NewIndexLookupRowIterAdapter(ctx *sql.Context, idx DoltIndex, keyIter nomsK
 		lookupTags[schema.KeylessRowIdTag] = 0
 	}
 
-	rows := durable.NomsMapFromIndex(idx.TableData())
+	rows := durable.NomsMapFromIndex(tableData)
 
 	conv := NewKVToSqlRowConverterForCols(idx.Format(), idx.Schema())
 	resBuf := resultBufferPool.Get().(*async.RingBuffer)
@@ -148,10 +149,14 @@ func (i *indexLookupRowIterAdapter) queueRows(ctx context.Context, epoch int) {
 		select {
 		case lookups.toLookupCh <- lookup:
 		case <-ctx.Done():
+			err := ctx.Err()
+			if err == nil {
+				err = io.EOF
+			}
 			i.resultBuf.Push(lookupResult{
 				idx: idx,
 				r:   nil,
-				err: ctx.Err(),
+				err: err,
 			}, epoch)
 
 			return
@@ -225,9 +230,9 @@ func (i *indexLookupRowIterAdapter) processKey(ctx context.Context, indexKey typ
 	return sqlRow, nil
 }
 
-type coveringIndexRowIterAdapter struct {
+type CoveringIndexRowIterAdapter struct {
 	idx       DoltIndex
-	keyIter   nomsKeyIter
+	rr        *noms.NomsRangeReader
 	conv      *KVToSqlRowConverter
 	ctx       *sql.Context
 	pkCols    *schema.ColCollection
@@ -235,17 +240,19 @@ type coveringIndexRowIterAdapter struct {
 	nbf       *types.NomsBinFormat
 }
 
-func NewCoveringIndexRowIterAdapter(ctx *sql.Context, idx DoltIndex, keyIter nomsKeyIter, resultCols []string) *coveringIndexRowIterAdapter {
+func NewCoveringIndexRowIterAdapter(ctx *sql.Context, idx DoltIndex, keyIter *noms.NomsRangeReader, resultCols []string) *CoveringIndexRowIterAdapter {
 	idxCols := idx.IndexSchema().GetPKCols()
 	tblPKCols := idx.Schema().GetPKCols()
 	sch := idx.Schema()
 	cols := sch.GetAllCols().GetColumns()
 	tagToSqlColIdx := make(map[uint64]int)
+	isPrimaryKeyIdx := idx.ID() == "PRIMARY"
 
 	resultColSet := set.NewCaseInsensitiveStrSet(resultCols)
 	for i, col := range cols {
 		_, partOfIdxKey := idxCols.GetByNameCaseInsensitive(col.Name)
-		if partOfIdxKey && (len(resultCols) == 0 || resultColSet.Contains(col.Name)) {
+		// Either this is a primary key index or the key is a part of the index and this part of the result column set.
+		if (partOfIdxKey || isPrimaryKeyIdx) && (len(resultCols) == 0 || resultColSet.Contains(col.Name)) {
 			tagToSqlColIdx[col.Tag] = i
 		}
 	}
@@ -258,9 +265,9 @@ func NewCoveringIndexRowIterAdapter(ctx *sql.Context, idx DoltIndex, keyIter nom
 		}
 	}
 
-	return &coveringIndexRowIterAdapter{
+	return &CoveringIndexRowIterAdapter{
 		idx:       idx,
-		keyIter:   keyIter,
+		rr:        keyIter,
 		conv:      NewKVToSqlRowConverter(idx.Format(), tagToSqlColIdx, cols, len(cols)),
 		ctx:       ctx,
 		pkCols:    sch.GetPKCols(),
@@ -270,16 +277,16 @@ func NewCoveringIndexRowIterAdapter(ctx *sql.Context, idx DoltIndex, keyIter nom
 }
 
 // Next returns the next row from the iterator.
-func (ci *coveringIndexRowIterAdapter) Next(ctx *sql.Context) (sql.Row, error) {
-	key, err := ci.keyIter.ReadKey(ctx)
+func (ci *CoveringIndexRowIterAdapter) Next(ctx *sql.Context) (sql.Row, error) {
+	key, value, err := ci.rr.ReadKV(ctx)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return ci.conv.ConvertKVTuplesToSqlRow(key, types.Tuple{})
+	return ci.conv.ConvertKVTuplesToSqlRow(key, value)
 }
 
-func (ci *coveringIndexRowIterAdapter) Close(*sql.Context) error {
+func (ci *CoveringIndexRowIterAdapter) Close(*sql.Context) error {
 	return nil
 }

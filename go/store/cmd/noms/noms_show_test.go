@@ -30,6 +30,7 @@ import (
 
 	"github.com/dolthub/dolt/go/store/chunks"
 	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/hash"
 	"github.com/dolthub/dolt/go/store/spec"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/util/clienttest"
@@ -45,31 +46,11 @@ type nomsShowTestSuite struct {
 }
 
 const (
-	res1 = "Commit{meta Struct,parents Set,parents_list List,value Ref} - struct Commit {\n  meta: struct {},\n  parents: set {},\n  parents_list: [],\n  value: #nl181uu1ioc2j6t7mt9paidjlhlcjtgj,\n}"
+	res1 = "Commit{meta Struct,parents Set,parents_list List,value Ref} - struct Commit {\n  meta: struct metadata {\n    desc: \"\",\n    email: \"\",\n    metaversion: \"1.0\",\n    name: \"\",\n    timestamp: 0,\n    user_timestamp: 0,\n  },\n  parents: set {},\n  parents_list: [],\n  value: #nl181uu1ioc2j6t7mt9paidjlhlcjtgj,\n}"
 	res2 = "String - \"test string\""
-	res3 = `Commit{meta Struct,parents Set,parents_closure Ref,parents_list List,value Ref} - struct Commit {
-  meta: struct {},
-  parents: set {
-    #4u3mpdq0o8at437p37i5u94fk2frr4qm,
-  },
-  parents_closure: #pr2umfcqukd4ltrgkpvsjrig7afb9ghg,
-  parents_list: [
-    #4u3mpdq0o8at437p37i5u94fk2frr4qm,
-  ],
-  value: #t43ks6746hf0fcefv5e9v1c02k2i0jr9,
-}`
+	res3 = "Commit{meta Struct,parents Set,parents_closure Ref,parents_list List,value Ref} - struct Commit {\n  meta: struct metadata {\n    desc: \"\",\n    email: \"\",\n    metaversion: \"1.0\",\n    name: \"\",\n    timestamp: 0,\n    user_timestamp: 0,\n  },\n  parents: set {\n    #4p26dvnrpjq2s1nvuijg5n0f6509ibva,\n  },\n  parents_closure: #ldu2nib3aeek3bogcmo1akt08m61d68d,\n  parents_list: [\n    #4p26dvnrpjq2s1nvuijg5n0f6509ibva,\n  ],\n  value: #t43ks6746hf0fcefv5e9v1c02k2i0jr9,\n}"
 	res4 = "List<Union<Float,String>> - [\n  \"elem1\",\n  2,\n  \"elem3\",\n]"
-	res5 = `Commit{meta Struct,parents Set,parents_closure Ref,parents_list List,value Ref} - struct Commit {
-  meta: struct {},
-  parents: set {
-    #idcre7pv1p74mfmidiguol1pu6rmt0bu,
-  },
-  parents_closure: #7pl4tlkc531difn1f32vlaqdve5g04p0,
-  parents_list: [
-    #idcre7pv1p74mfmidiguol1pu6rmt0bu,
-  ],
-  value: #nl181uu1ioc2j6t7mt9paidjlhlcjtgj,
-}`
+	res5 = "Commit{meta Struct,parents Set,parents_closure Ref,parents_list List,value Ref} - struct Commit {\n  meta: struct metadata {\n    desc: \"\",\n    email: \"\",\n    metaversion: \"1.0\",\n    name: \"\",\n    timestamp: 0,\n    user_timestamp: 0,\n  },\n  parents: set {\n    #n2n3mn23on0aoa1ru16kiap69qn83ulh,\n  },\n  parents_closure: #6njsht531j1sb5n12m7dq87iriteqkkg,\n  parents_list: [\n    #n2n3mn23on0aoa1ru16kiap69qn83ulh,\n  ],\n  value: #nl181uu1ioc2j6t7mt9paidjlhlcjtgj,\n}"
 )
 
 func (s *nomsShowTestSuite) spec(str string) spec.Spec {
@@ -92,6 +73,9 @@ func (s *nomsShowTestSuite) writeTestData(str string, value types.Value) types.R
 }
 
 func (s *nomsShowTestSuite) TestNomsShow() {
+	if types.Format_Default == types.Format_DOLT_DEV {
+		s.T().Skip()
+	}
 	datasetName := "dsTest"
 	str := spec.CreateValueSpecString("nbs", s.DBDir, datasetName)
 
@@ -168,10 +152,10 @@ func (s *nomsShowTestSuite) TestNomsShowRaw() {
 	s.NoError(err)
 
 	numChildChunks := 0
-	_ = l.WalkRefs(vrw.Format(), func(r types.Ref) error {
+	err = types.WalkAddrs(l, vrw.Format(), func(_ hash.Hash, _ bool) {
 		numChildChunks++
-		return nil
 	})
+	s.NoError(err)
 	s.True(numChildChunks > 0)
 	test(l)
 }
