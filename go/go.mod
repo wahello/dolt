@@ -19,7 +19,7 @@ require (
 	github.com/dolthub/ishell v0.0.0-20220112232610-14e753f0f371
 	github.com/dolthub/mmap-go v1.0.4-0.20201107010347-f9f2a9588a66
 	github.com/dolthub/sqllogictest/go v0.0.0-20201107003712-816f3ae12d81
-	github.com/dolthub/vitess v0.0.0-20220517011201-8f50d80eae58
+	github.com/dolthub/vitess v0.0.0-20220603212614-514e62ec66cd
 	github.com/dustin/go-humanize v1.0.0
 	github.com/fatih/color v1.9.0
 	github.com/flynn-archive/go-shlex v0.0.0-20150515145356-3f9db97f8568
@@ -67,8 +67,8 @@ require (
 
 require (
 	git.mills.io/prologic/bitcask v1.0.2
-	github.com/dolthub/go-mysql-server v0.11.1-0.20220517180350-eb55834c15cb
-	github.com/google/flatbuffers v2.0.5+incompatible
+	github.com/dolthub/go-mysql-server v0.11.1-0.20220607183612-59df03f03a67
+	github.com/google/flatbuffers v2.0.6+incompatible
 	github.com/gosuri/uilive v0.0.4
 	github.com/kch42/buzhash v0.0.0-20160816060738-9bdec3dec7c6
 	github.com/prometheus/client_golang v1.11.0
@@ -100,7 +100,6 @@ require (
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/gofrs/flock v0.8.0 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
-	github.com/golang/glog v0.0.0-20210429001901-424d2337a529 // indirect
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
 	github.com/googleapis/gax-go/v2 v2.0.5 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
@@ -140,7 +139,7 @@ require (
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/genproto v0.0.0-20210602131652-f16073e35f0c // indirect
-	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b // indirect
+	gopkg.in/yaml.v3 v3.0.0 // indirect
 )
 
 replace (

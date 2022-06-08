@@ -49,6 +49,8 @@ const (
 	defaultDataDir             = "."
 	defaultMetricsHost         = ""
 	defaultMetricsPort         = -1
+	defaultMySQLDbFilePath     = "mysql.db"
+	defaultPrivilegeFilePath   = "privs.json"
 )
 
 const (
@@ -125,6 +127,8 @@ type ServerConfig interface {
 	// PrivilegeFilePath returns the path to the file which contains all needed privilege information in the form of a
 	// JSON string.
 	PrivilegeFilePath() string
+	// MySQLDbFilePath returns the path to the file which contains the information for a MySQL db.
+	MySQLDbFilePath() string
 }
 
 type commandLineServerConfig struct {
@@ -145,6 +149,7 @@ type commandLineServerConfig struct {
 	requireSecureTransport bool
 	persistenceBehavior    string
 	privilegeFilePath      string
+	mysqlDbFilePath        string
 }
 
 var _ ServerConfig = (*commandLineServerConfig)(nil)
@@ -241,6 +246,10 @@ func (cfg *commandLineServerConfig) PrivilegeFilePath() string {
 	return cfg.privilegeFilePath
 }
 
+func (cfg *commandLineServerConfig) MySQLDbFilePath() string {
+	return cfg.mysqlDbFilePath
+}
+
 // DatabaseNamesAndPaths returns an array of env.EnvNameAndPathObjects corresponding to the databases to be loaded in
 // a multiple db configuration. If nil is returned the server will look for a database in the current directory and
 // give it a name automatically.
@@ -258,8 +267,8 @@ func (cfg *commandLineServerConfig) withHost(host string) *commandLineServerConf
 	return cfg
 }
 
-// withPort updates the port and returns the called `*commandLineServerConfig`, which is useful for chaining calls.
-func (cfg *commandLineServerConfig) withPort(port int) *commandLineServerConfig {
+// WithPort updates the port and returns the called `*commandLineServerConfig`, which is useful for chaining calls.
+func (cfg *commandLineServerConfig) WithPort(port int) *commandLineServerConfig {
 	cfg.port = port
 	return cfg
 }
@@ -342,6 +351,8 @@ func DefaultServerConfig() *commandLineServerConfig {
 		queryParallelism:    defaultQueryParallelism,
 		persistenceBehavior: defaultPersistenceBahavior,
 		dataDir:             defaultDataDir,
+		privilegeFilePath:   defaultPrivilegeFilePath,
+		mysqlDbFilePath:     defaultMySQLDbFilePath,
 	}
 }
 
@@ -375,8 +386,8 @@ func ConnectionString(config ServerConfig) string {
 
 // ConfigInfo returns a summary of some of the config which contains some of the more important information
 func ConfigInfo(config ServerConfig) string {
-	return fmt.Sprintf(`HP="%v:%v"|U="%v"|P="%v"|T="%v"|R="%v"|L="%v"`, config.Host(), config.Port(), config.User(),
-		config.Password(), config.ReadTimeout(), config.ReadOnly(), config.LogLevel())
+	return fmt.Sprintf(`HP="%v:%v"|T="%v"|R="%v"|L="%v"`, config.Host(), config.Port(),
+		config.ReadTimeout(), config.ReadOnly(), config.LogLevel())
 }
 
 // LoadTLSConfig loads the certificate chain from config.TLSKey() and config.TLSCert() and returns

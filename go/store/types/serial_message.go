@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/dolthub/dolt/go/gen/fb/serial"
 	"github.com/dolthub/dolt/go/store/hash"
@@ -51,21 +52,91 @@ func (sm SerialMessage) Hash(nbf *NomsBinFormat) (hash.Hash, error) {
 }
 
 func (sm SerialMessage) HumanReadableString() string {
-	if serial.GetFileID([]byte(sm)) == serial.StoreRootFileID {
+	switch serial.GetFileID(sm) {
+	case serial.StoreRootFileID:
 		msg := serial.GetRootAsStoreRoot([]byte(sm), 0)
 		ret := &strings.Builder{}
-		refs := msg.Refs(nil)
+		mapbytes := msg.AddressMapBytes()
+		fmt.Fprintf(ret, "StoreRoot{%s}", TupleRowStorage(mapbytes).HumanReadableString())
+		return ret.String()
+	case serial.TagFileID:
+		return "Tag"
+	case serial.WorkingSetFileID:
+		msg := serial.GetRootAsWorkingSet(sm, 0)
+		ret := &strings.Builder{}
 		fmt.Fprintf(ret, "{\n")
-		hashes := refs.RefArrayBytes()
-		for i := 0; i < refs.NamesLength(); i++ {
-			name := refs.Names(i)
-			addr := hash.New(hashes[:20])
-			fmt.Fprintf(ret, "  %s: %s\n", name, addr.String())
-		}
+		fmt.Fprintf(ret, "\tName: %s\n", msg.Name())
+		fmt.Fprintf(ret, "\tDesc: %s\n", msg.Desc())
+		fmt.Fprintf(ret, "\tEmail: %s\n", msg.Email())
+		fmt.Fprintf(ret, "\tTime: %s\n", time.UnixMilli((int64)(msg.TimestampMillis())).String())
+		fmt.Fprintf(ret, "\tWorkingRootAddr: #%s\n", hash.New(msg.WorkingRootAddrBytes()).String())
+		fmt.Fprintf(ret, "\tStagedRootAddr: #%s\n", hash.New(msg.StagedRootAddrBytes()).String())
 		fmt.Fprintf(ret, "}")
 		return ret.String()
+	case serial.CommitFileID:
+		msg := serial.GetRootAsCommit(sm, 0)
+		ret := &strings.Builder{}
+		fmt.Fprintf(ret, "{\n")
+		fmt.Fprintf(ret, "\tName: %s\n", msg.Name())
+		fmt.Fprintf(ret, "\tDesc: %s\n", msg.Description())
+		fmt.Fprintf(ret, "\tEmail: %s\n", msg.Email())
+		fmt.Fprintf(ret, "\tTime: %s\n", time.UnixMilli((int64)(msg.TimestampMillis())).String())
+		fmt.Fprintf(ret, "\tHeight: %d\n", msg.Height())
+
+		fmt.Fprintf(ret, "\tParents: {\n")
+		hashes := msg.ParentAddrsBytes()
+		for i := 0; i < msg.ParentAddrsLength()/hash.ByteLen; i++ {
+			addr := hash.New(hashes[i*20 : (i+1)*20])
+			fmt.Fprintf(ret, "\t\t#%s\n", addr.String())
+		}
+		fmt.Fprintf(ret, "\t}\n")
+
+		fmt.Fprintf(ret, "\tParentClosure: {\n")
+		hashes = msg.ParentClosureBytes()
+		for i := 0; i < msg.ParentClosureLength()/hash.ByteLen; i++ {
+			addr := hash.New(hashes[i*20 : (i+1)*20])
+			fmt.Fprintf(ret, "\t\t#%s\n", addr.String())
+		}
+		fmt.Fprintf(ret, "\t}\n")
+
+		fmt.Fprintf(ret, "}")
+		return ret.String()
+	case serial.RootValueFileID:
+		msg := serial.GetRootAsRootValue(sm, 0)
+		ret := &strings.Builder{}
+		fmt.Fprintf(ret, "{\n")
+		fmt.Fprintf(ret, "\tFeatureVersion: %d\n", msg.FeatureVersion())
+		fmt.Fprintf(ret, "\tForeignKeys: #%s\n", hash.New(msg.ForeignKeyAddrBytes()).String())
+		fmt.Fprintf(ret, "\tSuperSchema: #%s\n", hash.New(msg.SuperSchemasAddrBytes()).String())
+		fmt.Fprintf(ret, "\tTables: {\n\t%s", TupleRowStorage(msg.TablesBytes()).HumanReadableString())
+		fmt.Fprintf(ret, "\t}\n")
+		fmt.Fprintf(ret, "}")
+		return ret.String()
+	case serial.TableFileID:
+		msg := serial.GetRootAsTable(sm, 0)
+		ret := &strings.Builder{}
+
+		fmt.Fprintf(ret, "{\n")
+		fmt.Fprintf(ret, "\tSchema: #%s\n", hash.New(msg.SchemaBytes()).String())
+		fmt.Fprintf(ret, "\tViolations: #%s\n", hash.New(msg.ViolationsBytes()).String())
+		// TODO: merge conflicts, not stable yet
+
+		fmt.Fprintf(ret, "\tAutoinc: %d\n", msg.AutoIncrementValue())
+
+		// TODO: can't use tree package to print here, creates a cycle
+		fmt.Fprintf(ret, "\tPrimary index: prolly tree\n")
+
+		fmt.Fprintf(ret, "\tSecondary indexes: {\n\t%s\n", TupleRowStorage(msg.SecondaryIndexesBytes()).HumanReadableString())
+		fmt.Fprintf(ret, "\t}\n")
+		fmt.Fprintf(ret, "}")
+		return ret.String()
+	case serial.ProllyTreeNodeFileID:
+		return "ProllyTreeNode"
+	case serial.AddressMapFileID:
+		return "AddressMap"
+	default:
+		return "SerialMessage (HumanReadableString not implemented)"
 	}
-	return "SerialMessage"
 }
 
 func (sm SerialMessage) Less(nbf *NomsBinFormat, other LesserValuable) (bool, error) {
@@ -83,18 +154,9 @@ func (sm SerialMessage) walkRefs(nbf *NomsBinFormat, cb RefCallback) error {
 	switch serial.GetFileID([]byte(sm)) {
 	case serial.StoreRootFileID:
 		msg := serial.GetRootAsStoreRoot([]byte(sm), 0)
-		rm := msg.Refs(nil)
-		refs := rm.RefArrayBytes()
-		for i := 0; i < rm.NamesLength(); i++ {
-			off := i * 20
-			addr := hash.New(refs[off : off+20])
-			r, err := constructRef(nbf, addr, PrimitiveTypeMap[ValueKind], SerialMessageRefHeight)
-			if err != nil {
-				return err
-			}
-			if err = cb(r); err != nil {
-				return err
-			}
+		if msg.AddressMapLength() > 0 {
+			mapbytes := msg.AddressMapBytes()
+			return TupleRowStorage(mapbytes).walkRefs(nbf, cb)
 		}
 	case serial.TagFileID:
 		msg := serial.GetRootAsTag([]byte(sm), 0)
@@ -146,18 +208,9 @@ func (sm SerialMessage) walkRefs(nbf *NomsBinFormat, cb RefCallback) error {
 		}
 	case serial.RootValueFileID:
 		msg := serial.GetRootAsRootValue([]byte(sm), 0)
-		rm := msg.Tables(nil)
-		refs := rm.RefArrayBytes()
-		for i := 0; i < rm.NamesLength(); i++ {
-			off := i * 20
-			addr := hash.New(refs[off : off+20])
-			r, err := constructRef(nbf, addr, PrimitiveTypeMap[ValueKind], SerialMessageRefHeight)
-			if err != nil {
-				return err
-			}
-			if err = cb(r); err != nil {
-				return err
-			}
+		err := TupleRowStorage(msg.TablesBytes()).walkRefs(nbf, cb)
+		if err != nil {
+			return err
 		}
 		addr := hash.New(msg.ForeignKeyAddrBytes())
 		if !addr.IsEmpty() {
@@ -247,18 +300,9 @@ func (sm SerialMessage) walkRefs(nbf *NomsBinFormat, cb RefCallback) error {
 			}
 		}
 
-		rm := msg.SecondaryIndexes(nil)
-		refs := rm.RefArrayBytes()
-		for i := 0; i < rm.NamesLength(); i++ {
-			off := i * 20
-			addr := hash.New(refs[off : off+20])
-			r, err := constructRef(nbf, addr, PrimitiveTypeMap[ValueKind], SerialMessageRefHeight)
-			if err != nil {
-				return err
-			}
-			if err = cb(r); err != nil {
-				return err
-			}
+		err = TupleRowStorage(msg.SecondaryIndexesBytes()).walkRefs(nbf, cb)
+		if err != nil {
+			return err
 		}
 
 		mapbytes := msg.PrimaryIndexBytes()

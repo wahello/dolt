@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package prolly
+package shim
 
 import (
 	"fmt"
@@ -22,6 +22,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/store/chunks"
 	"github.com/dolthub/dolt/go/store/datas"
+	"github.com/dolthub/dolt/go/store/prolly"
 	"github.com/dolthub/dolt/go/store/prolly/tree"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/val"
@@ -31,29 +32,29 @@ func NodeFromValue(v types.Value) tree.Node {
 	return tree.NodeFromBytes(v.(types.TupleRowStorage))
 }
 
-func ValueFromMap(m Map) types.Value {
-	return tree.ValueFromNode(m.tuples.root)
+func ValueFromMap(m prolly.Map) types.Value {
+	return tree.ValueFromNode(m.Node())
 }
 
-func ValueFromConflictMap(m ConflictMap) types.Value {
-	return tree.ValueFromNode(m.conflicts.root)
+func ValueFromConflictMap(m prolly.ConflictMap) types.Value {
+	return tree.ValueFromNode(m.Node())
 }
 
-func MapFromValue(v types.Value, sch schema.Schema, vrw types.ValueReadWriter) Map {
+func MapFromValue(v types.Value, sch schema.Schema, vrw types.ValueReadWriter) prolly.Map {
 	root := NodeFromValue(v)
 	kd := KeyDescriptorFromSchema(sch)
 	vd := ValueDescriptorFromSchema(sch)
 	ns := tree.NewNodeStore(ChunkStoreFromVRW(vrw))
-	return NewMap(root, ns, kd, vd)
+	return prolly.NewMap(root, ns, kd, vd)
 }
 
-func ConflictMapFromValue(v types.Value, ourSchema, theirSchema, baseSchema schema.Schema, vrw types.ValueReadWriter) ConflictMap {
+func ConflictMapFromValue(v types.Value, ourSchema, theirSchema, baseSchema schema.Schema, vrw types.ValueReadWriter) prolly.ConflictMap {
 	root := NodeFromValue(v)
-	kd, ourVD := MapDescriptorsFromScheam(ourSchema)
+	kd, ourVD := MapDescriptorsFromSchema(ourSchema)
 	theirVD := ValueDescriptorFromSchema(theirSchema)
 	baseVD := ValueDescriptorFromSchema(baseSchema)
 	ns := tree.NewNodeStore(ChunkStoreFromVRW(vrw))
-	return NewConflictMap(root, ns, kd, ourVD, theirVD, baseVD)
+	return prolly.NewConflictMap(root, ns, kd, ourVD, theirVD, baseVD)
 }
 
 func ChunkStoreFromVRW(vrw types.ValueReadWriter) chunks.ChunkStore {
@@ -66,7 +67,7 @@ func ChunkStoreFromVRW(vrw types.ValueReadWriter) chunks.ChunkStore {
 	panic("unknown ValueReadWriter")
 }
 
-func MapDescriptorsFromScheam(sch schema.Schema) (kd, vd val.TupleDesc) {
+func MapDescriptorsFromSchema(sch schema.Schema) (kd, vd val.TupleDesc) {
 	kd = KeyDescriptorFromSchema(sch)
 	vd = ValueDescriptorFromSchema(sch)
 	return
@@ -113,24 +114,17 @@ func ValueDescriptorFromSchema(sch schema.Schema) val.TupleDesc {
 	return val.NewTupleDescriptor(tt...)
 }
 
-// todo(andy): move this to typeinfo
 func encodingFromSqlType(typ query.Type) val.Encoding {
+
 	// todo(andy): replace temp encodings
 	switch typ {
-	case query.Type_DECIMAL:
-		return val.DecimalEnc
-	case query.Type_DATE:
-		return val.DateEnc
-	case query.Type_DATETIME:
-		return val.DatetimeEnc
-	case query.Type_TIME:
-		return val.TimeEnc
-	case query.Type_TIMESTAMP:
-		return val.TimestampEnc
-	case query.Type_YEAR:
-		return val.YearEnc
-	case query.Type_GEOMETRY:
-		return val.GeometryEnc
+	case query.Type_BLOB:
+		// todo: temporary hack for enginetests
+		return val.StringEnc
+	case query.Type_TEXT:
+		return val.StringEnc
+	case query.Type_JSON:
+		return val.JSONEnc
 	}
 
 	switch typ {
@@ -160,24 +154,32 @@ func encodingFromSqlType(typ query.Type) val.Encoding {
 		return val.Float64Enc
 	case query.Type_BIT:
 		return val.Uint64Enc
+	case query.Type_DECIMAL:
+		return val.DecimalEnc
+	case query.Type_YEAR:
+		return val.YearEnc
+	case query.Type_DATE:
+		return val.DateEnc
+	case query.Type_TIME:
+		return val.TimeEnc
+	case query.Type_TIMESTAMP:
+		return val.DatetimeEnc
+	case query.Type_DATETIME:
+		return val.DatetimeEnc
+	case query.Type_ENUM:
+		return val.EnumEnc
+	case query.Type_SET:
+		return val.SetEnc
 	case query.Type_BINARY:
 		return val.ByteStringEnc
 	case query.Type_VARBINARY:
-		return val.ByteStringEnc
-	case query.Type_BLOB:
 		return val.ByteStringEnc
 	case query.Type_CHAR:
 		return val.StringEnc
 	case query.Type_VARCHAR:
 		return val.StringEnc
-	case query.Type_TEXT:
-		return val.StringEnc
-	case query.Type_JSON:
-		return val.JSONEnc
-	case query.Type_ENUM:
-		return val.StringEnc
-	case query.Type_SET:
-		return val.StringEnc
+	case query.Type_GEOMETRY:
+		return val.GeometryEnc
 	default:
 		panic(fmt.Sprintf("unknown encoding %v", typ))
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
 	"github.com/dolthub/dolt/go/store/pool"
 	"github.com/dolthub/dolt/go/store/prolly"
+	"github.com/dolthub/dolt/go/store/prolly/shim"
 	"github.com/dolthub/dolt/go/store/prolly/tree"
 	"github.com/dolthub/dolt/go/store/types"
 	"github.com/dolthub/dolt/go/store/val"
@@ -49,6 +50,8 @@ type mergeResult struct {
 // consistent with the primary row data.
 func mergeTableData(ctx context.Context, vrw types.ValueReadWriter, postMergeSchema, rootSchema, mergeSchema, ancSchema schema.Schema, tbl, mergeTbl, tableToUpdate *doltdb.Table, ancRows durable.Index, ancIndexSet durable.IndexSet) (mergeResult, error) {
 	group, gCtx := errgroup.WithContext(ctx)
+
+	stats := &MergeStats{Operation: TableModified}
 
 	indexEdits := make(chan indexEdit, 128)
 	conflicts := make(chan confVals, 128)
@@ -90,7 +93,7 @@ func mergeTableData(ctx context.Context, vrw types.ValueReadWriter, postMergeSch
 	}
 	confEditor := durable.ProllyMapFromConflictIndex(confIdx).Editor()
 	group.Go(func() error {
-		return processConflicts(ctx, conflicts, confEditor)
+		return processConflicts(ctx, stats, conflicts, confEditor)
 	})
 
 	err = group.Wait()
@@ -122,7 +125,7 @@ func mergeTableData(ctx context.Context, vrw types.ValueReadWriter, postMergeSch
 	return mergeResult{
 		tbl:   updatedTable,
 		cons:  confIdx,
-		stats: &MergeStats{Operation: TableModified},
+		stats: stats,
 	}, nil
 }
 
@@ -231,7 +234,7 @@ func newValueMerger(merged, leftSch, rightSch, baseSch schema.Schema, syncPool p
 
 	return &valueMerger{
 		numCols:      n,
-		vD:           prolly.ValueDescriptorFromSchema(merged),
+		vD:           shim.ValueDescriptorFromSchema(merged),
 		leftMapping:  leftMapping,
 		rightMapping: rightMapping,
 		baseMapping:  baseMapping,
@@ -308,7 +311,7 @@ func (m *valueMerger) processColumn(i int, left, right, base val.Tuple) ([]byte,
 	}
 }
 
-func processConflicts(ctx context.Context, conflictChan chan confVals, editor prolly.ConflictEditor) error {
+func processConflicts(ctx context.Context, stats *MergeStats, conflictChan chan confVals, editor prolly.ConflictEditor) error {
 OUTER:
 	for {
 		select {
@@ -316,6 +319,7 @@ OUTER:
 			if !ok {
 				break OUTER
 			}
+			stats.Conflicts++
 			err := editor.Add(ctx, conflict.key, conflict.ourVal, conflict.theirVal, conflict.baseVal)
 			if err != nil {
 				return err
