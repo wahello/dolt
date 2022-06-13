@@ -9,6 +9,8 @@ RUN apt update -y && \
         software-properties-common && \
     curl -OL https://packages.erlang-solutions.com/erlang-solutions_2.0_all.deb && \
     dpkg -i erlang-solutions_2.0_all.deb && \
+    curl -OL https://packages.erlang-solutions.com/ubuntu/erlang_solutions.asc && \
+    apt-key add erlang_solutions.asc && \
     curl -sL https://deb.nodesource.com/setup_14.x | bash - && \
     add-apt-repository ppa:deadsnakes/ppa -y && \
     apt update -y && \
@@ -45,12 +47,19 @@ RUN apt update -y && \
         libpq-dev \
         nodejs \
         postgresql-server-dev-all && \
-    update-ca-certificates -f && \
-    echo 'deb https://packages.erlang-solutions.com/ubuntu xenial contrib' | tee -a /etc/apt/sources.list && \
-    wget https://packages.erlang-solutions.com/ubuntu/erlang_solutions.asc && \
-    apt-key add erlang_solutions.asc && \
-    apt -y update && \
-    apt install -y esl-erlang elixir
+        update-ca-certificates -f
+
+# install erlang
+RUN curl -LO https://github.com/erlang/otp/releases/download/OTP-25.0.1/otp_src_25.0.1.tar.gz && \
+  tar -zxf otp_src_25.0.1.tar.gz && \
+  cd otp_src_25.0.1 && \
+  export ERL_TOP=`pwd` && \
+  ./configure && make && make install
+
+# install elixir
+RUN apt-get update -y && \
+    apt-get install -y erlang elixir
+
 # install go
 WORKDIR /root
 ENV GO_VERSION=1.18
@@ -86,7 +95,7 @@ RUN pip install mysql-connector-python PyMySQL sqlalchemy
 
 # Setup JAVA_HOME -- useful for docker commandline
 ENV JAVA_HOME /usr/lib/jvm/java-8-openjdk-amd64/
- 
+
 # install mysql connector java
 RUN mkdir -p /mysql-client-tests/java
 RUN curl -L -o /mysql-client-tests/java/mysql-connector-java-8.0.21.jar \
