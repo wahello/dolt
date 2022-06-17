@@ -15,10 +15,41 @@
 package sqle
 
 import (
+	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/sqle/index"
 
 	"github.com/dolthub/go-mysql-server/sql"
 )
+
+type cachedDurableIndexes struct {
+	rv *doltdb.RootValue
+	indexes index.DurableIndexes
+}
+
+func (c *cachedDurableIndexes) reload(ctx *sql.Context, t *DoltTable, lookup sql.IndexLookup) error {
+	newrv, err := t.workingRoot(ctx)
+	if err != nil {
+		return err
+	}
+	if newrv == c.rv {
+		return nil
+	}
+
+	// TODO: Must match newrv, of course...
+	dt, err := t.doltTable(ctx)
+	if err != nil {
+		return err
+	}
+	idx := index.DoltIndexFromLookup(lookup)
+	primary, secondary, err := idx.GetDurableIndexes(ctx, dt)
+	if err != nil {
+		return err
+	}
+
+	c.rv = newrv
+	c.indexes = index.DurableIndexes{Primary: primary, Secondary: secondary}
+	return nil
+}
 
 // IndexedDoltTable is a wrapper for a DoltTable and a doltIndexLookup. It implements the sql.Table interface like
 // DoltTable, but its RowIter function returns values that match the indexLookup, instead of all rows. It's returned by
@@ -26,6 +57,7 @@ import (
 type IndexedDoltTable struct {
 	table       *DoltTable
 	indexLookup sql.IndexLookup
+	cachedData  cachedDurableIndexes
 }
 
 var _ sql.IndexedTable = (*IndexedDoltTable)(nil)
@@ -52,28 +84,27 @@ func (idt *IndexedDoltTable) Schema() sql.Schema {
 }
 
 func (idt *IndexedDoltTable) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
-	dt, err := idt.table.doltTable(ctx)
+	err := idt.cachedData.reload(ctx, idt.table, idt.indexLookup)
 	if err != nil {
 		return nil, err
 	}
-	return index.NewRangePartitionIter(ctx, dt, idt.indexLookup)
+	return index.NewRangePartitionIter(ctx, idt.cachedData.indexes, idt.indexLookup)
 }
 
 func (idt *IndexedDoltTable) PartitionRows(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {
-	// todo(andy): only used by 'AS OF` queries
-	dt, err := idt.table.doltTable(ctx)
+	err := idt.cachedData.reload(ctx, idt.table, idt.indexLookup)
 	if err != nil {
 		return nil, err
 	}
-	return index.RowIterForIndexLookup(ctx, dt, idt.indexLookup, idt.table.sqlSch, nil)
+	return index.RowIterForIndexLookup(ctx, idt.cachedData.indexes, idt.indexLookup, idt.table.sqlSch, nil)
 }
 
 func (idt *IndexedDoltTable) PartitionRows2(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {
-	dt, err := idt.table.doltTable(ctx)
+	err := idt.cachedData.reload(ctx, idt.table, idt.indexLookup)
 	if err != nil {
 		return nil, err
 	}
-	return index.RowIterForIndexLookup(ctx, dt, idt.indexLookup, idt.table.sqlSch, nil)
+	return index.RowIterForIndexLookup(ctx, idt.cachedData.indexes, idt.indexLookup, idt.table.sqlSch, nil)
 }
 
 func (idt *IndexedDoltTable) IsTemporary() bool {
@@ -90,16 +121,17 @@ var _ sql.ProjectedTable = (*WritableIndexedDoltTable)(nil)
 type WritableIndexedDoltTable struct {
 	*WritableDoltTable
 	indexLookup sql.IndexLookup
+	cachedData cachedDurableIndexes
 }
 
 var _ sql.Table2 = (*WritableIndexedDoltTable)(nil)
 
 func (t *WritableIndexedDoltTable) Partitions(ctx *sql.Context) (sql.PartitionIter, error) {
-	dt, err := t.doltTable(ctx)
+	err := t.cachedData.reload(ctx, t.WritableDoltTable.DoltTable, t.indexLookup)
 	if err != nil {
 		return nil, err
 	}
-	return index.NewRangePartitionIter(ctx, dt, t.indexLookup)
+	return index.NewRangePartitionIter(ctx, t.cachedData.indexes, t.indexLookup)
 }
 
 func (t *WritableIndexedDoltTable) PartitionRows(ctx *sql.Context, part sql.Partition) (sql.RowIter, error) {

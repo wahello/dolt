@@ -188,13 +188,9 @@ func (t *DoltTable) WithIndexLookup(lookup sql.IndexLookup) sql.Table {
 
 // doltTable returns the underlying doltTable from the current session
 func (t *DoltTable) doltTable(ctx *sql.Context) (*doltdb.Table, error) {
-	root := t.lockedToRoot
-	var err error
-	if root == nil {
-		root, err = t.getRoot(ctx)
-		if err != nil {
-			return nil, err
-		}
+	root, err := t.workingRoot(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	table, ok, err := root.GetTable(ctx, t.tableName)
@@ -206,6 +202,18 @@ func (t *DoltTable) doltTable(ctx *sql.Context) (*doltdb.Table, error) {
 	}
 
 	return table, nil
+}
+
+func (t *DoltTable) workingRoot(ctx *sql.Context) (*doltdb.RootValue, error) {
+	root := t.lockedToRoot
+	var err error
+	if root == nil {
+		root, err = t.getRoot(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return root, nil
 }
 
 // getRoot returns the appropriate root value for this session. The only controlling factor

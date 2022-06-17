@@ -146,7 +146,13 @@ func DoltProceduresGetAll(ctx *sql.Context, db Database) ([]sql.StoredProcedureD
 		return nil, err
 	}
 
-	iter, err := index.RowIterForIndexLookup(ctx, dt, lookup, tbl.sqlSch, nil)
+	di := index.DoltIndexFromLookup(lookup)
+	primary, secondary, err := di.GetDurableIndexes(ctx, dt)
+	if err != nil {
+		return nil, err
+	}
+
+	iter, err := index.RowIterForIndexLookup(ctx, index.DurableIndexes{Primary: primary, Secondary: secondary}, lookup, tbl.sqlSch, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +281,13 @@ func DoltProceduresGetDetails(ctx *sql.Context, tbl *WritableDoltTable, name str
 		return sql.StoredProcedureDetails{}, false, err
 	}
 
-	rowIter, err := index.RowIterForIndexLookup(ctx, dt, indexLookup, tbl.sqlSch, nil)
+	di := index.DoltIndexFromLookup(indexLookup)
+	primary, secondary, err := di.GetDurableIndexes(ctx, dt)
+	if err != nil {
+		return sql.StoredProcedureDetails{}, false, err
+	}
+
+	rowIter, err := index.RowIterForIndexLookup(ctx, index.DurableIndexes{Primary: primary, Secondary: secondary}, indexLookup, tbl.sqlSch, nil)
 	if err != nil {
 		return sql.StoredProcedureDetails{}, false, err
 	}

@@ -284,7 +284,13 @@ func fragFromSchemasTable(ctx *sql.Context, tbl *WritableDoltTable, fragType str
 		return nil, false, err
 	}
 
-	iter, err := index.RowIterForIndexLookup(ctx, dt, lookup, tbl.sqlSch, nil)
+	di := index.DoltIndexFromLookup(lookup)
+	primary, secondary, err := di.GetDurableIndexes(ctx, dt)
+	if err != nil {
+		return nil, false, err
+	}
+
+	iter, err := index.RowIterForIndexLookup(ctx, index.DurableIndexes{Primary: primary, Secondary: secondary}, lookup, tbl.sqlSch, nil)
 	if err != nil {
 		return nil, false, err
 	}

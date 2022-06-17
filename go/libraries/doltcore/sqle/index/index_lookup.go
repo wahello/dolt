@@ -23,7 +23,6 @@ import (
 
 	"github.com/dolthub/go-mysql-server/sql"
 
-	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb"
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable"
 	"github.com/dolthub/dolt/go/libraries/doltcore/row"
 	"github.com/dolthub/dolt/go/libraries/doltcore/schema"
@@ -31,6 +30,11 @@ import (
 	"github.com/dolthub/dolt/go/store/prolly"
 	"github.com/dolthub/dolt/go/store/types"
 )
+
+type DurableIndexes struct {
+	Primary durable.Index
+	Secondary durable.Index
+}
 
 func PartitionIndexedTableRows(ctx *sql.Context, idx sql.Index, part sql.Partition, pkSch sql.PrimaryKeySchema, columns []string) (sql.RowIter, error) {
 	rp := part.(rangePartition)
@@ -44,20 +48,15 @@ func PartitionIndexedTableRows(ctx *sql.Context, idx sql.Index, part sql.Partiti
 	return RowIterForNomsRanges(ctx, doltIdx, ranges, columns, rp.primary, rp.secondary)
 }
 
-func RowIterForIndexLookup(ctx *sql.Context, t *doltdb.Table, ilu sql.IndexLookup, pkSch sql.PrimaryKeySchema, columns []string) (sql.RowIter, error) {
+func RowIterForIndexLookup(ctx *sql.Context, data DurableIndexes, ilu sql.IndexLookup, pkSch sql.PrimaryKeySchema, columns []string) (sql.RowIter, error) {
 	lookup := ilu.(*doltIndexLookup)
 	idx := lookup.idx
 
-	primary, secondary, err := idx.GetDurableIndexes(ctx, t)
-	if err != nil {
-		return nil, err
-	}
-
 	if types.IsFormat_DOLT_1(idx.Format()) {
 		// todo(andy)
-		return RowIterForProllyRange(ctx, idx, lookup.prollyRanges[0], pkSch, columns, primary, secondary)
+		return RowIterForProllyRange(ctx, idx, lookup.prollyRanges[0], pkSch, columns, data.Primary, data.Secondary)
 	} else {
-		return RowIterForNomsRanges(ctx, idx, lookup.nomsRanges, columns, primary, secondary)
+		return RowIterForNomsRanges(ctx, idx, lookup.nomsRanges, columns, data.Primary, data.Secondary)
 	}
 }
 
@@ -126,19 +125,15 @@ func DoltIndexFromLookup(lookup sql.IndexLookup) DoltIndex {
 	return lookup.(*doltIndexLookup).idx
 }
 
-func NewRangePartitionIter(ctx *sql.Context, t *doltdb.Table, lookup sql.IndexLookup) (sql.PartitionIter, error) {
+func NewRangePartitionIter(ctx *sql.Context, data DurableIndexes, lookup sql.IndexLookup) (sql.PartitionIter, error) {
 	dlu := lookup.(*doltIndexLookup)
-	primary, secondary, err := dlu.idx.GetDurableIndexes(ctx, t)
-	if err != nil {
-		return nil, err
-	}
 	return &rangePartitionIter{
 		nomsRanges:   dlu.nomsRanges,
 		prollyRanges: dlu.prollyRanges,
 		curr:         0,
 		mu:           &sync.Mutex{},
-		secondary:    secondary,
-		primary:      primary,
+		secondary:    data.Secondary,
+		primary:      data.Primary,
 	}, nil
 }
 

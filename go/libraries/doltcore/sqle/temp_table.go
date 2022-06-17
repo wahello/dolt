@@ -221,7 +221,12 @@ func (t *TempTable) DataLength(ctx *sql.Context) (uint64, error) {
 
 func (t *TempTable) PartitionRows(ctx *sql.Context, partition sql.Partition) (sql.RowIter, error) {
 	if t.lookup != nil {
-		return index.RowIterForIndexLookup(ctx, t.table, t.lookup, t.pkSch, nil)
+		di := index.DoltIndexFromLookup(t.lookup)
+		primary, secondary, err := di.GetDurableIndexes(ctx, t.table)
+		if err != nil {
+			return nil, err
+		}
+		return index.RowIterForIndexLookup(ctx, index.DurableIndexes{Primary: primary, Secondary: secondary}, t.lookup, t.pkSch, nil)
 	} else {
 		return partitionRows(ctx, t.table, t.sqlSchema().Schema, nil, partition)
 	}

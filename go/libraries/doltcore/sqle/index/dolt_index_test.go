@@ -1064,7 +1064,10 @@ func TestDoltIndexBetween(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, ok)
 
-			indexIter, err := index.RowIterForIndexLookup(ctx, dt, indexLookup, pkSch, nil)
+			primary, secondary, err := idx.GetDurableIndexes(ctx, dt)
+			require.NoError(t, err)
+
+			indexIter, err := index.RowIterForIndexLookup(ctx, index.DurableIndexes{Primary: primary, Secondary: secondary}, indexLookup, pkSch, nil)
 			require.NoError(t, err)
 
 			// If this is a primary index assert that a covering index was used
@@ -1295,7 +1298,10 @@ func testDoltIndex(t *testing.T, ctx *sql.Context, root *doltdb.RootValue, keys 
 	pkSch, err := sqlutil.FromDoltSchema("fake_table", idx.Schema())
 	require.NoError(t, err)
 
-	indexIter, err := index.RowIterForIndexLookup(ctx, dt, indexLookup, pkSch, nil)
+	primary, secondary, err := idx.GetDurableIndexes(ctx, dt)
+	require.NoError(t, err)
+
+	indexIter, err := index.RowIterForIndexLookup(ctx, index.DurableIndexes{Primary: primary, Secondary: secondary}, indexLookup, pkSch, nil)
 	require.NoError(t, err)
 
 	var readRows []sql.Row
