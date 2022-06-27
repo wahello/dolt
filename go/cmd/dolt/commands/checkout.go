@@ -16,7 +16,7 @@ package commands
 
 import (
 	"context"
-
+	"fmt"
 	"github.com/dolthub/dolt/go/cmd/dolt/cli"
 	"github.com/dolthub/dolt/go/cmd/dolt/errhand"
 	eventsapi "github.com/dolthub/dolt/go/gen/proto/dolt/services/eventsapi/v1alpha1"
@@ -24,7 +24,9 @@ import (
 	"github.com/dolthub/dolt/go/libraries/doltcore/doltdocs"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env"
 	"github.com/dolthub/dolt/go/libraries/doltcore/env/actions"
+	"github.com/dolthub/dolt/go/libraries/doltcore/ref"
 	"github.com/dolthub/dolt/go/libraries/utils/argparser"
+	"strings"
 )
 
 var checkoutDocs = cli.CommandDocumentationContent{
@@ -45,6 +47,7 @@ dolt checkout {{.LessThan}}table{{.GreaterThan}}...
 		`{{.LessThan}}branch{{.GreaterThan}}`,
 		`{{.LessThan}}table{{.GreaterThan}}...`,
 		`-b {{.LessThan}}new-branch{{.GreaterThan}} [{{.LessThan}}start-point{{.GreaterThan}}]`,
+		`-b {{.LessThan}}new-branch{{.GreaterThan}} --track {{.LessThan}}remote{{.GreaterThan}}/{{.LessThan}}branch{{.GreaterThan}}`,
 	},
 }
 
@@ -80,7 +83,7 @@ func (cmd CheckoutCmd) Exec(ctx context.Context, commandStr string, args []strin
 	helpPrt, usagePrt := cli.HelpAndUsagePrinters(cli.CommandDocsForCommandString(commandStr, checkoutDocs, ap))
 	apr := cli.ParseArgsOrDie(ap, args, helpPrt)
 
-	if (apr.Contains(cli.CheckoutCoBranch) && apr.NArg() > 1) || (!apr.Contains(cli.CheckoutCoBranch) && apr.NArg() == 0) {
+	if (apr.Contains(cli.CheckoutCoBranch) && apr.NArg() > 1) || (!apr.Contains(cli.CheckoutCoBranch) && (apr.NArg() == 0 || apr.Contains(cli.TrackFlag))) {
 		usagePrt()
 		return 1
 	}
@@ -90,7 +93,7 @@ func (cmd CheckoutCmd) Exec(ctx context.Context, commandStr string, args []strin
 		return HandleVErrAndExitCode(verr, usagePrt)
 	}
 
-	if newBranch, newBranchOk := apr.GetValue(cli.CheckoutCoBranch); newBranchOk {
+	if newBranch, ok := apr.GetValue(cli.CheckoutCoBranch); ok {
 		var verr errhand.VerboseError
 		if len(newBranch) == 0 {
 			verr = errhand.BuildDError("error: cannot checkout empty string").Build()
@@ -177,6 +180,12 @@ func checkoutNewBranch(ctx context.Context, dEnv *env.DoltEnv, newBranch string,
 	if apr.NArg() == 1 {
 		startPt = apr.Arg(0)
 	}
+	trackVal, setTrack := apr.GetValue(cli.TrackFlag)
+	if setTrack {
+		if trackVal != "direct" && trackVal != "inherit" {
+			startPt = trackVal
+		}
+	}
 
 	err := actions.CreateBranchWithStartPt(ctx, dEnv.DbData(), newBranch, startPt, false)
 
@@ -184,7 +193,78 @@ func checkoutNewBranch(ctx context.Context, dEnv *env.DoltEnv, newBranch string,
 		return errhand.BuildDError(err.Error()).Build()
 	}
 
-	return checkoutBranch(ctx, dEnv, newBranch, false)
+	verr := checkoutBranch(ctx, dEnv, newBranch, false)
+	if verr != nil {
+		return verr
+	}
+
+	if setTrack {
+		// the new branch is checked out at this point
+		// TODO : should we assume remoteName is always origin?
+		err = setRemoteTrackingForCurrentBranch(ctx, dEnv, "origin", startPt)
+		if err != nil {
+			return errhand.BuildDError(err.Error()).Build()
+		}
+		err = dEnv.RepoState.Save(dEnv.FS)
+		if err != nil {
+			err = fmt.Errorf("%w; %s", actions.ErrFailedToSaveRepoState, err.Error())
+		}
+	}
+
+	return nil
+}
+
+func setRemoteTrackingForCurrentBranch(ctx context.Context, dEnv *env.DoltEnv, remoteName, startPt string) error {
+	rsr := dEnv.RepoStateReader()
+	rsw := dEnv.RepoStateWriter()
+	ddb := dEnv.DoltDB
+
+	authHost := dEnv.Config.GetStringOrDefault(env.RemotesApiHostKey, env.DefaultRemotesApiHost)
+
+	refSpecStr := ""
+
+	if strings.HasPrefix(startPt, remoteName) {
+		refSpecStr = strings.TrimPrefix(startPt, remoteName)
+	} else {
+		// TODO : what if startPt = "remotes/origin/branch"
+		refSpecStr = startPt
+	}
+
+	remotes, err := rsr.GetRemotes()
+	if err != nil {
+		return err
+	}
+	remote, remoteOK := remotes[remoteName]
+	if !remoteOK {
+		return fmt.Errorf("%w: '%s'", env.ErrUnknownRemote, remoteName)
+	}
+	refSpecStr, err = env.DisambiguateRefSpecStr(ctx, ddb, refSpecStr)
+	if err != nil {
+		return err
+	}
+	refSpec, err := ref.ParseRefSpec(refSpecStr)
+	if err != nil {
+		return fmt.Errorf("%w: '%s'", err, refSpecStr)
+	}
+
+	currentBranch := rsr.CWBHeadRef()
+	hasRef, err := ddb.HasRef(ctx, currentBranch)
+	if err != nil {
+		return err
+	}
+	if !hasRef {
+		return doltdb.ErrBranchNotFound
+	}
+
+	src := refSpec.SrcRef(currentBranch)
+	dest := refSpec.DestRef(src)
+
+	return rsw.UpdateBranch(currentBranch.GetPath(), env.BranchConfig{
+		Merge: ref.MarshalableRef{
+			Ref: dest,
+		},
+		Remote: remote.Name,
+	})
 }
 
 func checkoutTablesAndDocs(ctx context.Context, dEnv *env.DoltEnv, tables []string, docs doltdocs.Docs) errhand.VerboseError {
