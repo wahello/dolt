@@ -59,8 +59,6 @@ func (rk deleteSingleKey) makeMutations(ctx context.Context, leaf Node) ([]mutat
 }
 
 func TestWriteAmplification(t *testing.T) {
-	t.Skip("unskip for metrics")
-
 	t.Run("Key Splitter", func(t *testing.T) {
 		testWriteAmpWithSplitter(t, newKeySplitter)
 	})
@@ -70,9 +68,7 @@ func TestWriteAmplification(t *testing.T) {
 }
 
 func TestNodeSplitterMetrics(t *testing.T) {
-	t.Skip("unskip for metrics")
-
-	const scale = 100_000
+	const scale = 1_000_000
 	t.Run("Key Splitter", func(t *testing.T) {
 		defaultSplitterFactory = newKeySplitter
 		t.Run("Random Uints", func(t *testing.T) {
@@ -80,11 +76,11 @@ func TestNodeSplitterMetrics(t *testing.T) {
 			before := pm.(Map)
 			printMapSummary(t, before)
 		})
-		t.Run("Ascending Uints", func(t *testing.T) {
-			keys, values, desc := ascendingCompositeIntTuples(scale)
-			before := prollyMapFromKeysAndValues(t, desc, desc, keys, values)
-			printMapSummary(t, before)
-		})
+		//t.Run("Ascending Uints", func(t *testing.T) {
+		//	keys, values, desc := ascendingCompositeIntTuples(scale)
+		//	before := prollyMapFromKeysAndValues(t, desc, desc, keys, values)
+		//	printMapSummary(t, before)
+		//})
 	})
 	t.Run("Smooth Rolling Hasher", func(t *testing.T) {
 		defaultSplitterFactory = newRollingHashSplitter
@@ -93,11 +89,11 @@ func TestNodeSplitterMetrics(t *testing.T) {
 			before := pm.(Map)
 			printMapSummary(t, before)
 		})
-		t.Run("Ascending Uints", func(t *testing.T) {
-			keys, values, desc := ascendingCompositeIntTuples(scale)
-			before := prollyMapFromKeysAndValues(t, desc, desc, keys, values)
-			printMapSummary(t, before)
-		})
+		//t.Run("Ascending Uints", func(t *testing.T) {
+		//	keys, values, desc := ascendingCompositeIntTuples(scale)
+		//	before := prollyMapFromKeysAndValues(t, desc, desc, keys, values)
+		//	printMapSummary(t, before)
+		//})
 	})
 }
 

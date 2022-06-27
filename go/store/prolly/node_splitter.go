@@ -140,7 +140,8 @@ func (sns *rollingHashSplitter) hashByte(b byte) bool {
 	}
 
 	hash := sns.bz.Sum32()
-	patt := rollingHashPattern(sns.offset)
+	//patt := rollingHashPattern(sns.offset)
+	patt := defaultChunkPattern
 	sns.crossedBoundary = hash&patt == patt
 
 	return sns.crossedBoundary
@@ -198,6 +199,8 @@ func newKeySplitter(level uint8) nodeSplitter {
 }
 
 var _ splitterFactory = newKeySplitter
+
+const defaultChunkPattern = uint32(1<<12 - 1) // Avg Chunk Size of 4k
 
 func (ks *keySplitter) Append(items ...nodeItem) error {
 	if len(items) != 2 {

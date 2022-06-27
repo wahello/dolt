@@ -140,6 +140,14 @@ func printTreeSummaryByLevel(t *testing.T, nd Node, ns NodeStore) {
 			i, len(cards), sizes.mean(), sp50, sp90, sp100, cards.mean(), cp50, cp90, cp100)
 	}
 	fmt.Println()
+
+	var union samples
+	for i := range sizeByLevel {
+		union = append(union, sizeByLevel[i]...)
+	}
+
+	name := fmt.Sprintf("geometric_%d.png", rand.Intn(1000))
+	plotIntHistogram(name, union)
 }
 
 func plotNodeSizeDistribution(t *testing.T, name string, nd Node, ns NodeStore) {
